@@ -1,0 +1,35 @@
+{
+  "name": "signals-lab",
+  "version": "0.0.0",
+  "description": "A playground for learning how signals are implemented",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/* --format cjs,esm --dts",
+    "dev": "tsup src/* --format cjs,esm --dts --watch"
+  },
+  "keywords": [
+    "signals",
+    "reactivity"
+  ],
+  "author": "Mohamed Ragaiy Saleh",
+  "license": "MIT",
+  "packageManager": "pnpm@10.5.2",
+  "devDependencies": {
+    "@types/node": "^22.14.1",
+    "tsup": "^8.4.0",
+    "typescript": "^5.8.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ],
+    "ignoredBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}
