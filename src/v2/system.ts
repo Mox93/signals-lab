@@ -1,12 +1,12 @@
 export interface Dependency {
-  subsHead: LinkNode | undefined;
-  subsTail: LinkNode | undefined;
+  subsHead: LinkNode | null;
+  subsTail: LinkNode | null;
 }
 
 export interface Subscriber {
   flags: Flags;
-  depsHead: LinkNode | undefined;
-  depsTail: LinkNode | undefined;
+  depsHead: LinkNode | null;
+  depsTail: LinkNode | null;
 }
 
 interface Computed extends Dependency, Subscriber {}
@@ -14,16 +14,16 @@ interface Computed extends Dependency, Subscriber {}
 export interface LinkNode {
   sub: Subscriber | Computed;
   dep: Dependency | Computed;
-  prevSub: LinkNode | undefined;
-  nextSub: LinkNode | undefined;
-  nextDep: LinkNode | undefined;
+  prevSub: LinkNode | null;
+  nextSub: LinkNode | null;
+  nextDep: LinkNode | null;
 }
 
 export type Flags = number & { brand: "flags" };
 
 interface OneWayLink<T> {
   target: T;
-  linked: OneWayLink<T> | undefined;
+  linked: OneWayLink<T> | null;
 }
 
 export const COMPUTED = (1 << 0) as Flags,
@@ -42,7 +42,7 @@ export function createReactiveSystem({
   updateComputed(computed: Computed): boolean;
   notifyEffect(effect: Subscriber): boolean;
 }) {
-  const notifyBuffer: (Subscriber | undefined)[] = [];
+  const notifyBuffer: (Subscriber | null)[] = [];
   let bufferSize = 0;
   let notifyIndex = 0;
 
@@ -61,7 +61,7 @@ export function createReactiveSystem({
    *
    * @param dep - The dependency to be linked.
    * @param sub - The subscriber that depends on this dependency.
-   * @returns The newly created link object if the two are not already linked; otherwise `undefined`.
+   * @returns The newly created link object if the two are not already linked; otherwise `null`.
    */
   function link(dep: Dependency, sub: Subscriber) {
     /**
@@ -106,8 +106,8 @@ export function createReactiveSystem({
       dep,
       sub,
       nextDep,
-      nextSub: undefined,
-      prevSub: undefined,
+      nextSub: null,
+      prevSub: null,
     };
     sub.depsTail = newLink;
     dep.subsTail = newLink;
@@ -133,7 +133,7 @@ export function createReactiveSystem({
    * @param sub - The subscriber to start tracking.
    */
   function startTracking(sub: Subscriber) {
-    sub.depsTail = undefined;
+    sub.depsTail = null;
     sub.flags = ((sub.flags & ~(NOTIFIED | RECURSED | PROPAGATED)) |
       TRACKING) as Flags;
   }
@@ -148,21 +148,21 @@ export function createReactiveSystem({
    */
   function endTracking(sub: Subscriber) {
     let depsTail = sub.depsTail,
-      nextDep: LinkNode | undefined,
-      link: LinkNode | undefined,
+      nextDep: LinkNode | null,
+      link: LinkNode | null = null,
       dep: Dependency | Computed,
-      nextSub: LinkNode | undefined,
-      prevSub: LinkNode | undefined,
-      cmpDeps: LinkNode | undefined;
+      nextSub: LinkNode | null,
+      prevSub: LinkNode | null,
+      cmpDeps: LinkNode | null;
 
     if (depsTail) {
       if ((nextDep = depsTail.nextDep)) {
         link = nextDep;
-        depsTail.nextDep = undefined;
+        depsTail.nextDep = null;
       }
     } else {
       link = sub.depsHead;
-      sub.depsHead = undefined;
+      sub.depsHead = null;
     }
 
     /**
@@ -187,8 +187,8 @@ export function createReactiveSystem({
         if ((cmpDeps = dep.depsHead)) {
           link = cmpDeps;
           dep.depsTail!.nextDep = nextDep;
-          dep.depsHead = undefined;
-          dep.depsTail = undefined;
+          dep.depsHead = null;
+          dep.depsTail = null;
           continue;
         }
       }
@@ -196,6 +196,43 @@ export function createReactiveSystem({
     }
 
     sub.flags = (sub.flags & ~TRACKING) as Flags;
+  }
+
+  /**
+   * Traverses and marks subscribers starting from the provided link.
+   *
+   * It sets flags (e.g., Dirty, PendingComputed, PendingEffect) on each subscriber
+   * to indicate which ones require re-computation or effect processing.
+   * This function should be called after a signal's value changes.
+   *
+   * @param current - The starting link from which propagation begins.
+   */
+  function propagate(current: LinkNode): void {
+    let next = current.nextSub,
+      branches: OneWayLink<LinkNode | null> | null = null,
+      branchDepth = 0,
+      targetFlag = DIRTY,
+      sub: Computed,
+      subFlags: Flags,
+      shouldNotify: boolean;
+
+    top: while (true) {
+      sub = current.sub as Computed;
+      subFlags = sub.flags;
+
+      shouldNotify = false;
+
+      if (!(subFlags & (TRACKING | RECURSED | PROPAGATED))) {
+        sub.flags = (subFlags | targetFlag | NOTIFIED) as Flags;
+        shouldNotify = true;
+      } else if (subFlags & RECURSED && !(subFlags & TRACKING)) {
+        sub.flags = ((subFlags & ~RECURSED) | targetFlag | NOTIFIED) as Flags;
+        shouldNotify = true;
+      } else if (!(subFlags & PROPAGATED) && isValidLink(current, sub)) {
+        sub.flags = (subFlags | RECURSED | targetFlag | NOTIFIED) as Flags;
+        shouldNotify = !!sub.subsHead;
+      }
+    }
   }
 
   /**
