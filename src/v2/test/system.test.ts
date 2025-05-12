@@ -1,9 +1,7 @@
 // system.test.ts
 import {
   createReactiveSystem,
-  Dependency,
-  Subscriber,
-  Derived,
+  ReactiveNode,
   LinkNode,
   Flags,
   STALE,
@@ -18,7 +16,7 @@ describe("propagate", () => {
     // The specific implementations of updateComputed and notifyEffect
     // are not needed for testing propagate's core logic.
     const system = createReactiveSystem({
-      updateComputed: jest.fn(),
+      update: jest.fn(),
       runEffect: jest.fn(),
     });
     propagate = system.propagate;
@@ -26,7 +24,7 @@ describe("propagate", () => {
 
   test("should mark a single direct subscriber as STALE", () => {
     const depA = createMockNode("dep");
-    const subB = createMockNode("derived", 0 as Flags) as Derived;
+    const subB = createMockNode("derived", 0 as Flags) as ReactiveNode;
     const linkAB = linkNodes(depA, subB); // A -> B
 
     expect(subB.flags & STALE).toBe(0); // Initially not STALE
@@ -39,8 +37,8 @@ describe("propagate", () => {
 
   test("should mark multiple direct subscribers as STALE", () => {
     const depA = createMockNode("dep");
-    const subB = createMockNode("derived", 0 as Flags) as Derived;
-    const subC = createMockNode("derived", 0 as Flags) as Derived;
+    const subB = createMockNode("derived", 0 as Flags) as ReactiveNode;
+    const subC = createMockNode("derived", 0 as Flags) as ReactiveNode;
 
     const linkAB = linkNodes(depA, subB); // A -> B
     linkNodes(depA, subC); // A -> C (linkAB.nextSub will point to linkAC)
@@ -57,8 +55,8 @@ describe("propagate", () => {
   test("should mark subscribers in a chain as STALE", () => {
     // A -> B -> C
     const depA = createMockNode("dep");
-    const subB = createMockNode("derived", 0 as Flags) as Derived;
-    const subC = createMockNode("derived", 0 as Flags) as Derived;
+    const subB = createMockNode("derived", 0 as Flags) as ReactiveNode;
+    const subC = createMockNode("derived", 0 as Flags) as ReactiveNode;
 
     const linkAB = linkNodes(depA, subB);
     linkNodes(subB, subC); // B -> C
@@ -79,9 +77,9 @@ describe("propagate", () => {
     //  \ /
     //   D
     const depA = createMockNode("dep");
-    const subB = createMockNode("derived", 0 as Flags) as Derived;
-    const subC = createMockNode("derived", 0 as Flags) as Derived;
-    const subD = createMockNode("derived", 0 as Flags) as Derived;
+    const subB = createMockNode("derived", 0 as Flags) as ReactiveNode;
+    const subC = createMockNode("derived", 0 as Flags) as ReactiveNode;
+    const subD = createMockNode("derived", 0 as Flags) as ReactiveNode;
 
     const linkAB = linkNodes(depA, subB); // A -> B
     linkNodes(depA, subC); // A -> C
@@ -102,8 +100,8 @@ describe("propagate", () => {
   test("should handle propagation when a node is already STALE", () => {
     // A -> B -> C
     const depA = createMockNode("dep");
-    const subB = createMockNode("derived", 0 as Flags) as Derived;
-    const subC = createMockNode("derived", STALE) as Derived; // C is already STALE
+    const subB = createMockNode("derived", 0 as Flags) as ReactiveNode;
+    const subC = createMockNode("derived", STALE) as ReactiveNode; // C is already STALE
 
     const linkAB = linkNodes(depA, subB);
     linkNodes(subB, subC); // B -> C
@@ -120,7 +118,7 @@ describe("propagate", () => {
   test("should handle nodes with no further subscribers", () => {
     // A -> B (B has no subscribers)
     const depA = createMockNode("dep");
-    const subB = createMockNode("derived", 0 as Flags) as Derived;
+    const subB = createMockNode("derived", 0 as Flags) as ReactiveNode;
     const linkAB = linkNodes(depA, subB);
 
     expect(subB.flags & STALE).toBe(0);
@@ -133,9 +131,9 @@ describe("propagate", () => {
     //      \
     //       D (leaf)
     const depA2 = createMockNode("dep");
-    const subB2 = createMockNode("derived", 0 as Flags) as Derived;
-    const subC2 = createMockNode("derived", 0 as Flags) as Derived;
-    const subD2 = createMockNode("derived", 0 as Flags) as Derived;
+    const subB2 = createMockNode("derived", 0 as Flags) as ReactiveNode;
+    const subC2 = createMockNode("derived", 0 as Flags) as ReactiveNode;
+    const subD2 = createMockNode("derived", 0 as Flags) as ReactiveNode;
     const linkA2B2 = linkNodes(depA2, subB2);
     linkNodes(subB2, subC2); // B2 -> C2
     linkNodes(subB2, subD2); // B2 -> D2
@@ -153,13 +151,13 @@ describe("propagate", () => {
     //   \ /   \ /
     //    G-----H
     const depA = createMockNode("dep");
-    const subB = createMockNode("derived", 0 as Flags) as Derived; // B depends on A
-    const subC = createMockNode("derived", 0 as Flags) as Derived; // C depends on A
-    const subD = createMockNode("derived", 0 as Flags) as Derived; // D depends on A, B
-    const subE = createMockNode("derived", 0 as Flags) as Derived; // E depends on B, D
-    const subF = createMockNode("derived", 0 as Flags) as Derived; // F depends on E
-    const subG = createMockNode("derived", 0 as Flags) as Derived; // G depends on C, D
-    const subH = createMockNode("derived", 0 as Flags) as Derived; // H depends on E, F, G
+    const subB = createMockNode("derived", 0 as Flags) as ReactiveNode; // B depends on A
+    const subC = createMockNode("derived", 0 as Flags) as ReactiveNode; // C depends on A
+    const subD = createMockNode("derived", 0 as Flags) as ReactiveNode; // D depends on A, B
+    const subE = createMockNode("derived", 0 as Flags) as ReactiveNode; // E depends on B, D
+    const subF = createMockNode("derived", 0 as Flags) as ReactiveNode; // F depends on E
+    const subG = createMockNode("derived", 0 as Flags) as ReactiveNode; // G depends on C, D
+    const subH = createMockNode("derived", 0 as Flags) as ReactiveNode; // H depends on E, F, G
 
     // Establish dependencies (only A's needed for starting propagation)
     const linkAC = linkNodes(depA, subC); // A -> C (Assume this is subsHead for A)
@@ -196,9 +194,9 @@ describe("propagate", () => {
 
   test("should handle cycles without infinite loops", () => {
     // A -> B -> C -> A (conceptual cycle, A is also a Derived node)
-    const subA = createMockNode("derived", 0 as Flags) as Derived;
-    const subB = createMockNode("derived", 0 as Flags) as Derived;
-    const subC = createMockNode("derived", 0 as Flags) as Derived;
+    const subA = createMockNode("derived", 0 as Flags) as ReactiveNode;
+    const subB = createMockNode("derived", 0 as Flags) as ReactiveNode;
+    const subC = createMockNode("derived", 0 as Flags) as ReactiveNode;
 
     const linkAB = linkNodes(subA, subB); // A -> B
     linkNodes(subB, subC); // B -> C

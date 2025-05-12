@@ -1,54 +1,39 @@
 // test-utils.ts (or place in your test file)
-import {
-  Dependency,
-  Subscriber,
-  Derived,
-  LinkNode,
-  Flags,
-  STALE,
-} from "../system";
+import { ReactiveNode, LinkNode, Flags } from "../system";
 
 // Helper function to create mock nodes
 export const createMockNode = (
   type: "dep" | "sub" | "derived",
   initialFlags: Flags = 0 as Flags
-): Dependency | Subscriber | Derived => {
-  const base = {
-    subsHead: null,
-    subsTail: null,
-  };
+): ReactiveNode | ReactiveNode | ReactiveNode => {
+  const base = {};
   if (type === "dep") {
-    return base as Dependency;
+    return base as ReactiveNode;
   }
   const subBase = {
     ...base,
     flags: initialFlags,
-    depsHead: null,
-    depsTail: null,
   };
   if (type === "sub") {
-    return subBase as Subscriber;
+    return subBase as ReactiveNode;
   }
   // Derived
-  return subBase as Derived;
+  return subBase as ReactiveNode;
 };
 
 // Helper function to create a link object
 export const createLink = (
-  dep: Dependency | Derived,
-  sub: Subscriber | Derived
+  dep: ReactiveNode | ReactiveNode,
+  sub: ReactiveNode | ReactiveNode
 ): LinkNode => ({
   dep,
   sub,
-  prevSub: null,
-  nextSub: null,
-  nextDep: null,
 });
 
 // Helper to link a dependency and a subscriber, updating both lists
 export const linkNodes = (
-  dep: Dependency | Derived,
-  sub: Subscriber | Derived
+  dep: ReactiveNode | ReactiveNode,
+  sub: ReactiveNode | ReactiveNode
 ): LinkNode => {
   const newLink = createLink(dep, sub);
 

@@ -1,47 +1,43 @@
-export interface Dependency {
-  subsHead: LinkNode | null;
-  subsTail: LinkNode | null;
-  tick: number;
-}
-
-export interface Subscriber {
+export interface ReactiveNode {
+  subsHead?: LinkNode;
+  subsTail?: LinkNode;
+  depsHead?: LinkNode;
+  depsTail?: LinkNode;
   flags: Flags;
-  depsHead: LinkNode | null;
-  depsTail: LinkNode | null;
-  tick: number;
+  version: number;
 }
-
-export interface Derived extends Dependency, Subscriber {}
 
 export interface LinkNode {
-  sub: Subscriber | Derived;
-  dep: Dependency | Derived;
-  prevSub: LinkNode | null;
-  nextSub: LinkNode | null;
-  nextDep: LinkNode | null;
+  sub: ReactiveNode;
+  dep: ReactiveNode;
+  prevSub?: LinkNode;
+  nextSub?: LinkNode;
+  nextDep?: LinkNode;
 }
 
 export type Flags = number & { brand: "flags" };
 
-export const DERIVED = (1 << 0) as Flags,
-  EFFECT = (1 << 1) as Flags,
-  STALE = (1 << 2) as Flags, // Needs to be reevaluated
-  PENDING = (1 << 3) as Flags; // In the process of reevaluation
+export const RELAYER = 1 as Flags,
+  WATCHER = (1 << 1) as Flags,
+  STALE = (1 << 2) as Flags, // Must be re-evaluated unconditionally, bypassing source checks.
+  PENDING = (1 << 3) as Flags, // Potentially needs re-evaluation; sources must be checked.
+  RUNNING = (1 << 4) as Flags; // In the process of re-evaluation
+
+const DIRTY = STALE | PENDING,
+  PROPAGATING = DIRTY | RUNNING;
+
+interface ReactiveSystemActions {
+  update(relayer: ReactiveNode): boolean;
+  notify(watcher: ReactiveNode): void;
+}
 
 export function createReactiveSystem({
-  updateComputed,
-  runEffect,
-}: {
-  updateComputed(computed: Derived): boolean;
-  runEffect(effect: Subscriber): void;
-}) {
-  const batch: (Subscriber | null)[] = [],
-    queue: (LinkNode | null)[] = [];
-  let batchSize = 0,
-    batchIndex = 0,
-    queueSize = 0,
-    queueIndex = 0,
-    tick = 0;
+  update,
+  notify,
+}: ReactiveSystemActions) {
+  const queue: (LinkNode | undefined)[] = [];
+  let queueSize = 0,
+    queueIndex = 0;
 
   return {
     /**
@@ -49,9 +45,9 @@ export function createReactiveSystem({
      *
      * @param dep - The dependency to be linked.
      * @param sub - The subscriber that depends on this dependency.
-     * @returns The newly created link object if the two are not already linked; otherwise `null`.
+     * @returns The newly created link object if the two are not already linked; otherwise `undefined`.
      */
-    link(dep: Dependency, sub: Subscriber) {
+    link(dep: ReactiveNode, sub: ReactiveNode) {
       /**
        * Here we're handling the case of accessing the same dep multiple
        * times with no other dep getting accessed in between them
@@ -90,13 +86,7 @@ export function createReactiveSystem({
        */
       if (depLastSub?.sub === sub && isValidLink(depLastSub, sub)) return;
 
-      const newLink: LinkNode = {
-        dep,
-        sub,
-        nextDep,
-        nextSub: null,
-        prevSub: null,
-      };
+      const newLink: LinkNode = { dep, sub, nextDep };
       sub.depsTail = newLink;
       dep.subsTail = newLink;
 
@@ -120,9 +110,9 @@ export function createReactiveSystem({
      *
      * @param sub - The subscriber to start tracking.
      */
-    startTracking(sub: Subscriber) {
-      sub.depsTail = null;
-      sub.flags = ((sub.flags & ~STALE) | PENDING) as Flags;
+    startTracking(sub: ReactiveNode) {
+      sub.depsTail = undefined;
+      sub.flags = ((sub.flags & ~DIRTY) | RUNNING) as Flags;
     },
 
     /**
@@ -133,22 +123,20 @@ export function createReactiveSystem({
      *
      * @param sub - The subscriber whose tracking is ending.
      */
-    endTracking(sub: Subscriber) {
+    endTracking(sub: ReactiveNode) {
       let depsTail = sub.depsTail,
-        nextDep: LinkNode | null,
-        link: LinkNode | null = null,
-        dep: Derived,
-        nextSub: LinkNode | null,
-        prevSub: LinkNode | null;
+        nextDep: LinkNode | undefined,
+        link: LinkNode | undefined,
+        dep: ReactiveNode,
+        nextSub: LinkNode | undefined,
+        prevSub: LinkNode | undefined;
 
-      if (depsTail) {
-        if ((nextDep = depsTail.nextDep)) {
-          link = nextDep;
-          depsTail.nextDep = null;
-        }
-      } else {
+      if (!depsTail) {
         link = sub.depsHead;
-        sub.depsHead = null;
+        sub.depsHead = undefined;
+      } else if ((nextDep = depsTail.nextDep)) {
+        link = nextDep;
+        depsTail.nextDep = undefined;
       }
 
       /**
@@ -158,7 +146,7 @@ export function createReactiveSystem({
        * to the next link in the chain. The link objects are returned to linkPool for reuse.
        */
       while (link) {
-        dep = link.dep as Derived;
+        dep = link.dep;
 
         nextSub = link.nextSub;
         prevSub = link.prevSub;
@@ -169,7 +157,7 @@ export function createReactiveSystem({
 
         nextDep = link.nextDep;
         /**
-         * In the case of the dependency having dependencies (i.e. a derived signal),
+         * In the case of the dependency having dependencies (i.e. computed signal),
          * if it does not have any more subscribes we disconnect it from its dependencies
          * to allow them to be freed from memory if no longer needed.
          */
@@ -177,18 +165,18 @@ export function createReactiveSystem({
           /**
            * Since this dependency is no longer subscribing to anything it should be considered
            * 'STALE' so it gets recomputed the next time it's subscribed to.
-           * */
-          dep.flags = (dep.flags | STALE) as Flags;
+           */
+          dep.flags = (dep.flags | PENDING) as Flags;
           link = dep.depsHead;
           dep.depsTail!.nextDep = nextDep;
-          dep.depsHead = null;
-          dep.depsTail = null;
+          dep.depsHead = undefined;
+          dep.depsTail = undefined;
           continue;
         }
         link = nextDep;
       }
 
-      sub.flags = (sub.flags & ~PENDING) as Flags;
+      sub.flags = (sub.flags & ~RUNNING) as Flags;
     },
 
     /**
@@ -201,48 +189,74 @@ export function createReactiveSystem({
      * @param link - The starting link from which propagation begins.
      */
     propagate(link: LinkNode) {
-      let sub: Derived, subFlags: Flags, branch: LinkNode | null;
+      let sub: ReactiveNode,
+        flags: Flags,
+        branch: LinkNode | undefined,
+        targetFlags = link.dep.flags & RELAYER ? PENDING : STALE;
       queue[queueSize++] = link;
 
       while (queueIndex < queueSize) {
         link = queue[queueIndex]!;
-        queue[queueIndex++] = null;
+        queue[queueIndex++] = undefined;
 
         do {
-          sub = link.sub as Derived;
-          subFlags = sub.flags;
+          sub = link.sub;
+          flags = sub.flags;
+          sub.flags = (flags | targetFlags) as Flags;
 
-          if (subFlags & (STALE | PENDING)) continue;
-          sub.flags = (subFlags | STALE) as Flags;
-
-          if (subFlags & EFFECT) batch[batchSize++] = sub;
+          if (flags & PROPAGATING) continue;
+          if (flags & WATCHER) notify(sub);
           else if ((branch = sub.subsHead)) queue[queueSize++] = branch;
         } while ((link = link.nextSub!));
+        targetFlags = PENDING;
       }
       queueSize = queueIndex = 0;
     },
 
     /**
-     * Processes queued effect notifications after a batch operation finishes.
+     * Recursively checks and updates all computed subscribers marked as pending.
      *
-     * Iterates through all queued effects, calling notifyEffect on each.
-     * If an effect remains partially handled, its flags are updated, and future
-     * notifications may be triggered until fully handled.
+     * It traverses the linked structure using a stack mechanism. For each computed
+     * subscriber in a pending state, updateComputed is called and shallowPropagate
+     * is triggered if a value changes. Returns whether any updates occurred.
+     *
+     * @param link - The starting link representing a sequence of pending computed.
+     * @returns `true` if a computed was updated, otherwise `false`.
      */
-    processEffects() {
-      let effect: Subscriber, flags: Flags;
-      if (batchSize) tick++;
-      while (batchIndex < batchSize) {
-        effect = batch[batchIndex]!;
-        batch[batchIndex++] = null;
-        if ((flags = effect.flags) & STALE) {
-          effect.flags = ((flags & ~STALE) | PENDING) as Flags;
-          runEffect(effect);
-          effect.tick = tick;
-          effect.flags = (flags & ~PENDING) as Flags;
-        }
+    checkStale(link: LinkNode) {
+      const stack = [link],
+        path: ReactiveNode[] = [];
+      let size = 1,
+        depth = 0,
+        dep: ReactiveNode,
+        flags: Flags,
+        dirty: Flags,
+        nextDep: LinkNode | undefined,
+        branch: LinkNode | undefined,
+        i: number;
+
+      while (size && (link = stack[--size])) {
+        do {
+          dep = link.dep;
+
+          if ((dirty = ((flags = dep.flags) & DIRTY) as Flags))
+            path[depth] = dep;
+          dep.flags = (flags & ~DIRTY) as Flags;
+          if (!dirty || !(nextDep = dep.depsHead)) nextDep = link.nextDep;
+          else {
+            depth++;
+            if ((branch = link.nextDep)) stack[size++] = branch;
+          }
+
+          backtrack: if (flags & STALE) {
+            for (i = depth; i >= 0; i--) if (!update(path[i])) break backtrack;
+            return true;
+          }
+        } while ((link = nextDep!));
+        depth--;
       }
-      batchSize = batchIndex = 0;
+
+      return false;
     },
   };
 
@@ -256,7 +270,7 @@ export function createReactiveSystem({
    * @param sub - The subscriber whose link list is being checked.
    * @returns `true` if the link is found in the subscriber's list; otherwise `false`.
    */
-  function isValidLink(checkLink: LinkNode, sub: Subscriber) {
+  function isValidLink(checkLink: LinkNode, sub: ReactiveNode) {
     const depsTail = sub.depsTail;
     if (depsTail) {
       let link = sub.depsHead;
