@@ -87,8 +87,6 @@ export function createReactiveSystem({
       if (depLastSub?.sub === sub && isValidLink(depLastSub, sub)) return;
 
       const newLink: LinkNode = { dep, sub, nextDep };
-      sub.depsTail = newLink;
-      dep.subsTail = newLink;
 
       if (currentDep) currentDep.nextDep = newLink;
       else sub.depsHead = newLink;
@@ -99,6 +97,8 @@ export function createReactiveSystem({
         oldTail.nextSub = newLink;
       } else dep.subsHead = newLink;
 
+      sub.depsTail = newLink;
+      dep.subsTail = newLink;
       return newLink;
     },
 

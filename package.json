@@ -18,7 +18,7 @@
   ],
   "author": "Mohamed Ragaiy Saleh",
   "license": "MIT",
-  "packageManager": "pnpm@10.9.0",
+  "packageManager": "pnpm@10.10.0",
   "devDependencies": {
     "@types/jest": "^29.5.14",
     "@types/node": "^22.14.1",
