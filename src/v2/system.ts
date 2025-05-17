@@ -68,7 +68,7 @@ export function createReactiveSystem({
 
       /**
        * Here we're handling the case of accessing the same dep multiple
-       * times with event if other dep got accessed in between them
+       * times within the same run even if other dep got accessed in between them
        * ------------
        * TODO investigate
        * Need to understand why only checking for the dep inside
@@ -147,15 +147,16 @@ export function createReactiveSystem({
        */
       while (link) {
         dep = link.dep;
-
         nextSub = link.nextSub;
         prevSub = link.prevSub;
+        nextDep = link.nextDep;
+
         if (nextSub) nextSub.prevSub = prevSub;
         else dep.subsTail = prevSub;
+
         if (prevSub) prevSub.nextSub = nextSub;
         else dep.subsHead = nextSub;
 
-        nextDep = link.nextDep;
         /**
          * In the case of the dependency having dependencies (i.e. computed signal),
          * if it does not have any more subscribes we disconnect it from its dependencies
@@ -164,9 +165,9 @@ export function createReactiveSystem({
         if (!dep.subsHead && dep.depsHead) {
           /**
            * Since this dependency is no longer subscribing to anything it should be considered
-           * 'STALE' so it gets recomputed the next time it's subscribed to.
+           * 'STALE' so it gets re-evaluated the next time it's subscribed to.
            */
-          dep.flags = (dep.flags | PENDING) as Flags;
+          dep.flags = (dep.flags | STALE) as Flags;
           link = dep.depsHead;
           dep.depsTail!.nextDep = nextDep;
           dep.depsHead = undefined;
@@ -214,46 +215,46 @@ export function createReactiveSystem({
     },
 
     /**
-     * Recursively checks and updates all computed subscribers marked as pending.
+     * Recursively checks and updates computed subscribers marked as PENDING,
+     * until it finds the first fully updated path.
      *
-     * It traverses the linked structure using a stack mechanism. For each computed
-     * subscriber in a pending state, updateComputed is called and shallowPropagate
-     * is triggered if a value changes. Returns whether any updates occurred.
+     * It traverses the linked structure using a stack mechanism. While progressing
+     * in depth it keeps track of the path is came through. Once it hist a STALE node,
+     * the constructed path is backtracked calling update on each node till they all compleat
+     * or a node that's value didn't change is found, in which case it moves on with checking other nodes.
      *
-     * @param link - The starting link representing a sequence of pending computed.
-     * @returns `true` if a computed was updated, otherwise `false`.
+     * @param link - The starting link representing a sequence of PENDING computed.
+     * @returns `true` if an updated path was found, otherwise `false`.
      */
-    checkStale(link: LinkNode) {
-      const stack = [link],
-        path: ReactiveNode[] = [];
-      let size = 1,
-        depth = 0,
+    checkDirty(link: LinkNode) {
+      const stack: LinkNode[] = [];
+      let depth = 0,
         dep: ReactiveNode,
-        flags: Flags,
-        dirty: Flags,
-        nextDep: LinkNode | undefined,
-        branch: LinkNode | undefined,
-        i: number;
+        sub: ReactiveNode,
+        flags: Flags;
 
-      while (size && (link = stack[--size])) {
-        do {
-          dep = link.dep;
+      top: while (link) {
+        sub = link.sub;
 
-          if ((dirty = ((flags = dep.flags) & DIRTY) as Flags))
-            path[depth] = dep;
-          dep.flags = (flags & ~DIRTY) as Flags;
-          if (!dirty || !(nextDep = dep.depsHead)) nextDep = link.nextDep;
-          else {
-            depth++;
-            if ((branch = link.nextDep)) stack[size++] = branch;
-          }
-
-          backtrack: if (flags & STALE) {
-            for (i = depth; i >= 0; i--) if (!update(path[i])) break backtrack;
+        if (link !== stack[depth]) {
+          if (
+            (dep = link.dep).version > sub.version ||
+            ((flags = dep.flags) & STALE && update(dep))
+          ) {
+            while (depth--)
+              if (!update((link = stack[depth]).dep)) continue top;
             return true;
           }
-        } while ((link = nextDep!));
-        depth--;
+
+          if (flags & PENDING) {
+            stack[depth++] = link;
+            link = dep.depsHead!;
+            continue;
+          }
+        }
+
+        sub.flags = (sub.flags & ~DIRTY) as Flags;
+        if (!(link = link.nextDep!) && depth) link = stack[--depth];
       }
 
       return false;

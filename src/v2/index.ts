@@ -1,13 +1,33 @@
 import {
   createReactiveSystem,
-  Flags,
-  LinkNode,
+  type Flags,
+  type LinkNode,
   PENDING,
   RELAYER,
-  ReactiveNode,
+  RUNNING,
+  type ReactiveNode,
   STALE,
   WATCHER,
 } from "./system";
+
+const __DEV__ = true;
+
+if (__DEV__) {
+  const FLAGS = [
+    ["COMPUTED", RELAYER],
+    ["EFFECT", WATCHER],
+    ["STALE", STALE],
+    ["PENDING", PENDING],
+    ["RUNNING", RUNNING],
+  ] as const;
+  Object.assign(window, {
+    flags(target: number) {
+      const result: string[] = [];
+      for (const [key, value] of FLAGS) if (target & value) result.push(key);
+      console.log(result.toString());
+    },
+  });
+}
 
 interface RootNode extends ReactiveNode {}
 
@@ -60,6 +80,7 @@ const COMPUTED = RELAYER | STALE;
 //#region Public functions
 export function signal<T>(): Signal<T | undefined>;
 export function signal<T>(fn: () => T): DerivedSignal<T>;
+export function signal<T>(fn: () => T, initialValue: T): DerivedSignal<T>;
 export function signal<T>(value: T): Signal<T>;
 export function signal(valueOrFn?: unknown, initialValue?: unknown) {
   const instance =
@@ -84,7 +105,8 @@ export function signal(valueOrFn?: unknown, initialValue?: unknown) {
 export function isSignal(value: any): value is Signal {
   try {
     return SIGNAL in value;
-  } catch {
+  } catch (error) {
+    if (__DEV__) console.error(error);
     return false;
   }
 }
@@ -104,6 +126,8 @@ export function untrack(signalOrFn: Function) {
   activeSub = undefined;
   try {
     return isSignal(signalOrFn) ? signalOrFn.value : signalOrFn();
+  } catch (error) {
+    if (__DEV__) console.error(error);
   } finally {
     activeSub = prevSub;
   }
@@ -125,6 +149,8 @@ export function root(fn: (dispose: () => void) => void) {
   startTracking(r);
   try {
     fn(dispose);
+  } catch (error) {
+    if (__DEV__) console.error(error);
   } finally {
     endTracking(r);
     activeRoot = prevRoot;
@@ -169,8 +195,8 @@ Object.defineProperty(_Signal.computed, "value", {
   get(this: BoundSignal) {
     const node = this(SIGNAL),
       flags = node.flags;
-    if (activeSub) link(node, activeSub);
-    if (flags & STALE || (flags & PENDING && checkStale(node.depsHead!)))
+    if (activeSub && activeSub !== node) link(node, activeSub);
+    if (flags & STALE || (flags & PENDING && checkDirty(node.depsHead!)))
       updateComputed(node);
     return node.currentValue;
   },
@@ -180,6 +206,8 @@ function batchHandler(this: Function, ...args: unknown[]) {
   batchDepth++;
   try {
     return this.apply(this, args);
+  } catch (error) {
+    if (__DEV__) console.error(error);
   } finally {
     if (!--batchDepth) flush();
   }
@@ -192,7 +220,7 @@ function unlink(this: ReactiveNode) {
 //#endregion
 
 //#region Internal functions
-const { link, startTracking, endTracking, propagate, checkStale } =
+const { link, startTracking, endTracking, propagate, checkDirty } =
   createReactiveSystem({
     update: updateComputed,
     notify(effect: EffectNode) {
@@ -210,7 +238,8 @@ function updateComputed(computed: SignalNode) {
     computed.currentValue = newValue;
     computed.version = ++version;
     return true;
-  } catch {
+  } catch (error) {
+    if (__DEV__) console.error(error);
     return false;
   } finally {
     endTracking(computed);
@@ -225,6 +254,8 @@ function runEffect(e: EffectNode) {
   try {
     e.fn();
     e.version = ++version;
+  } catch (error) {
+    if (__DEV__) console.error(error);
   } finally {
     endTracking(e);
     activeSub = prevSub;
@@ -238,7 +269,7 @@ function flush() {
     batchQueue[batchIndex++] = undefined;
     if (
       (flags = effect.flags) & STALE ||
-      (flags & PENDING && (link = effect.depsHead) && checkStale(link))
+      (flags & PENDING && (link = effect.depsHead) && checkDirty(link))
     )
       runEffect(effect);
   }
