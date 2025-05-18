@@ -3,6 +3,9 @@ export interface ReactiveNode {
   subsTail?: LinkNode;
   depsHead?: LinkNode;
   depsTail?: LinkNode;
+  id?: number;
+  activeRun?: { [id: number]: LinkNode };
+  prevRun?: { [id: number]: LinkNode };
   flags: Flags;
   version: number;
 }
@@ -17,8 +20,8 @@ export interface LinkNode {
 
 export type Flags = number & { brand: "flags" };
 
-export const RELAYER = 1 as Flags,
-  WATCHER = (1 << 1) as Flags,
+export const COMPUTED = 1 as Flags,
+  EFFECT = (1 << 1) as Flags,
   STALE = (1 << 2) as Flags, // Must be re-evaluated unconditionally, bypassing source checks.
   PENDING = (1 << 3) as Flags, // Potentially needs re-evaluation; sources must be checked.
   RUNNING = (1 << 4) as Flags; // In the process of re-evaluation
@@ -37,7 +40,8 @@ export function createReactiveSystem({
 }: ReactiveSystemActions) {
   const queue: (LinkNode | undefined)[] = [];
   let queueSize = 0,
-    queueIndex = 0;
+    queueIndex = 0,
+    id = 0;
 
   return {
     /**
@@ -48,58 +52,56 @@ export function createReactiveSystem({
      * @returns The newly created link object if the two are not already linked; otherwise `undefined`.
      */
     link(dep: ReactiveNode, sub: ReactiveNode) {
+      if (typeof dep.id !== "number") dep.id = id++;
       /**
        * Here we're handling the case of accessing the same dep multiple
-       * times with no other dep getting accessed in between them
+       * times within the same run with no deps accessed in between them
        */
-      const currentDep = sub.depsTail;
-      if (currentDep?.dep === dep) return;
+      const prevDep = sub.depsTail;
+      if (prevDep?.dep === dep) return;
+
+      /**
+       * Here we're handling the case of accessed the same dep multiple
+       * times within the same run with other deps accessed in between them
+       */
+      const activeRun = sub.activeRun;
+      if (activeRun?.[dep.id]) return;
 
       /**
        * Here we're handling the case of on subsequent runs the deps are
        * accessed in the same order as the run before them otherwise we
        * start from the top (e.g., sub.depsHead)
        */
-      const nextDep = currentDep ? currentDep.nextDep : sub.depsHead;
-      if (nextDep?.dep === dep) {
-        sub.depsTail = nextDep;
-        return;
+      const running = sub.flags & RUNNING;
+      let nextDep: LinkNode | undefined;
+      if (running) {
+        nextDep = prevDep ? prevDep.nextDep : sub.depsHead;
+        if (nextDep?.dep === dep) {
+          if (activeRun) activeRun[dep.id] = nextDep;
+          sub.depsTail = nextDep;
+          return;
+        }
       }
 
       /**
-       * Here we're handling the case of accessing the same dep multiple
-       * times within the same run even if other dep got accessed in between them
-       * ------------
-       * TODO investigate
-       * Need to understand why only checking for the dep inside
-       * its subsTail is sufficient enough for making sure no
-       * duplication happen.
-       ** - What if the dep was accessed by other subs in the subsequent
-       **   runs, wouldn't that make the last sub be a different sub than
-       **   one we're currently are linking.
+       * TODO figure out when is this case needed
        */
-      const depLastSub = dep.subsTail;
-      /**
-       * TODO investigate
-       * Is there a faster way to check if the dep is linked to the sub,
-       * maybe through something like an id pair 'subId:depId'
-       */
-      if (depLastSub?.sub === sub && isValidLink(depLastSub, sub)) return;
+      const prevSub = dep.subsTail;
+      if (!running && prevSub?.sub === sub) return;
 
-      const newLink: LinkNode = { dep, sub, nextDep };
+      const oldLink = sub.prevRun?.[dep.id],
+        newLink = (sub.depsTail = oldLink || { dep, sub, nextDep, prevSub });
 
-      if (currentDep) currentDep.nextDep = newLink;
+      if (activeRun) activeRun[dep.id] = newLink;
+      if (prevDep) prevDep.nextDep = newLink;
       else sub.depsHead = newLink;
+      if (prevSub) prevSub.nextSub = newLink;
+      else dep.subsHead = newLink;
 
-      if (dep.subsHead) {
-        const oldTail = dep.subsTail!;
-        newLink.prevSub = oldTail;
-        oldTail.nextSub = newLink;
-      } else dep.subsHead = newLink;
-
-      sub.depsTail = newLink;
-      dep.subsTail = newLink;
-      return newLink;
+      if (!oldLink) {
+        dep.subsTail = newLink;
+        return newLink;
+      }
     },
 
     /**
@@ -113,6 +115,8 @@ export function createReactiveSystem({
     startTracking(sub: ReactiveNode) {
       sub.depsTail = undefined;
       sub.flags = ((sub.flags & ~DIRTY) | RUNNING) as Flags;
+      sub.prevRun = sub.activeRun;
+      sub.activeRun = {};
     },
 
     /**
@@ -177,6 +181,7 @@ export function createReactiveSystem({
         link = nextDep;
       }
 
+      sub.prevRun = undefined;
       sub.flags = (sub.flags & ~RUNNING) as Flags;
     },
 
@@ -193,7 +198,7 @@ export function createReactiveSystem({
       let sub: ReactiveNode,
         flags: Flags,
         branch: LinkNode | undefined,
-        targetFlags = link.dep.flags & RELAYER ? PENDING : STALE;
+        targetFlags = link.dep.flags & COMPUTED ? PENDING : STALE;
       queue[queueSize++] = link;
 
       while (queueIndex < queueSize) {
@@ -206,7 +211,7 @@ export function createReactiveSystem({
           sub.flags = (flags | targetFlags) as Flags;
 
           if (flags & PROPAGATING) continue;
-          if (flags & WATCHER) notify(sub);
+          if (flags & EFFECT) notify(sub);
           else if ((branch = sub.subsHead)) queue[queueSize++] = branch;
         } while ((link = link.nextSub!));
         targetFlags = PENDING;
@@ -260,27 +265,4 @@ export function createReactiveSystem({
       return false;
     },
   };
-
-  /**
-   * Verifies whether the given link is valid for the specified subscriber.
-   *
-   * It iterates through the subscriber's link list (from sub.deps to sub.depsTail)
-   * to determine if the provided link object is part of that chain.
-   *
-   * @param checkLink - The link object to validate.
-   * @param sub - The subscriber whose link list is being checked.
-   * @returns `true` if the link is found in the subscriber's list; otherwise `false`.
-   */
-  function isValidLink(checkLink: LinkNode, sub: ReactiveNode) {
-    const depsTail = sub.depsTail;
-    if (depsTail) {
-      let link = sub.depsHead;
-      while (link) {
-        if (link === checkLink) return true;
-        if (link === depsTail) break;
-        link = link.nextDep;
-      }
-    }
-    return false;
-  }
 }

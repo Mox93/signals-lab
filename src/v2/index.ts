@@ -1,21 +1,21 @@
 import {
+  COMPUTED,
   createReactiveSystem,
+  EFFECT,
   type Flags,
   type LinkNode,
   PENDING,
-  RELAYER,
-  RUNNING,
   type ReactiveNode,
+  RUNNING,
   STALE,
-  WATCHER,
 } from "./system";
 
 const __DEV__ = true;
 
 if (__DEV__) {
   const FLAGS = [
-    ["COMPUTED", RELAYER],
-    ["EFFECT", WATCHER],
+    ["COMPUTED", COMPUTED],
+    ["EFFECT", EFFECT],
     ["STALE", STALE],
     ["PENDING", PENDING],
     ["RUNNING", RUNNING],
@@ -66,6 +66,7 @@ export interface DerivedSignal<T = unknown> extends SignalBuilder<T> {
 }
 
 const SIGNAL = Symbol("signal"),
+  DERIVED = (COMPUTED | STALE) as Flags,
   batchQueue: (EffectNode | undefined)[] = [];
 
 let batchDepth = 0,
@@ -74,8 +75,6 @@ let batchDepth = 0,
   version = 0,
   activeSub: ReactiveNode | undefined,
   activeRoot: RootNode | undefined;
-
-const COMPUTED = RELAYER | STALE;
 
 //#region Public functions
 export function signal<T>(): Signal<T | undefined>;
@@ -89,7 +88,7 @@ export function signal(valueOrFn?: unknown, initialValue?: unknown) {
           _Signal.bind({
             currentValue: initialValue,
             fn: valueOrFn,
-            flags: COMPUTED,
+            flags: DERIVED,
             version: 0,
           }),
           _Signal.computed
@@ -134,7 +133,7 @@ export function untrack(signalOrFn: Function) {
 }
 
 export function effect(fn: () => void) {
-  const e: EffectNode = { fn, flags: WATCHER, version: 0 };
+  const e: EffectNode = { fn, flags: EFFECT, version: 0 };
   if (activeSub) link(e, activeSub);
   else if (activeRoot) link(e, activeRoot);
   runEffect(e);
@@ -142,18 +141,19 @@ export function effect(fn: () => void) {
 }
 
 export function root(fn: (dispose: () => void) => void) {
-  const r: RootNode = { flags: WATCHER, version: 0 };
-  const dispose = unlink.bind(r);
+  const r: RootNode = { flags: EFFECT, version: 0 };
+  const prevSub = activeSub;
+  activeSub = undefined;
   const prevRoot = activeRoot;
   activeRoot = r;
-  startTracking(r);
+  const dispose = unlink.bind(r);
   try {
     fn(dispose);
   } catch (error) {
     if (__DEV__) console.error(error);
   } finally {
-    endTracking(r);
     activeRoot = prevRoot;
+    activeSub = prevSub;
   }
   return dispose;
 }
@@ -264,6 +264,7 @@ function runEffect(e: EffectNode) {
 
 function flush() {
   let effect: EffectNode, link: LinkNode | undefined, flags: Flags;
+
   while (batchIndex < batchSize) {
     effect = batchQueue[batchIndex]!;
     batchQueue[batchIndex++] = undefined;
