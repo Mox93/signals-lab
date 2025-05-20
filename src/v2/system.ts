@@ -90,7 +90,8 @@ export function createReactiveSystem({
       if (!running && prevSub?.sub === sub) return;
 
       const oldLink = sub.prevRun?.[dep.id],
-        newLink = (sub.depsTail = oldLink || { dep, sub, nextDep, prevSub });
+        newLink = (sub.depsTail = oldLink || { dep, sub, prevSub });
+      newLink.nextDep = nextDep;
 
       if (activeRun) activeRun[dep.id] = newLink;
       if (prevDep) prevDep.nextDep = newLink;
