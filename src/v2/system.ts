@@ -95,10 +95,10 @@ export function createReactiveSystem({
       if (activeRun) activeRun[dep.id] = newLink;
       if (prevDep) prevDep.nextDep = newLink;
       else sub.depsHead = newLink;
-      if (prevSub) prevSub.nextSub = newLink;
-      else dep.subsHead = newLink;
-
+      
       if (!oldLink) {
+        if (prevSub) prevSub.nextSub = newLink;
+        else dep.subsHead = newLink;
         dep.subsTail = newLink;
         return newLink;
       }
@@ -258,8 +258,10 @@ export function createReactiveSystem({
           }
         }
 
-        sub.flags = (sub.flags & ~DIRTY) as Flags;
-        if (!(link = link.nextDep!) && depth) link = stack[--depth];
+        if (!(link = link.nextDep!)) {
+          sub.flags = (sub.flags & ~DIRTY) as Flags;
+          if (depth) link = stack[--depth];
+        }
       }
 
       return false;
