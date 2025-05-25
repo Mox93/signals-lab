@@ -49,10 +49,8 @@ export function createReactiveSystem({
      *
      * @param dep - The dependency to be linked.
      * @param sub - The subscriber that depends on this dependency.
-     * @returns The newly created link object if the two are not already linked; otherwise `undefined`.
      */
     link(dep: ReactiveNode, sub: ReactiveNode) {
-      if (typeof dep.id !== "number") dep.id = id++;
       /**
        * Here we're handling the case of accessing the same dep multiple
        * times within the same run with no deps accessed in between them
@@ -60,12 +58,19 @@ export function createReactiveSystem({
       const prevDep = sub.depsTail;
       if (prevDep?.dep === dep) return;
 
+      let depId = dep.id,
+        hadId: boolean = true;
+      if (depId === undefined) {
+        dep.id = depId = id++;
+        hadId = false;
+      }
+
       /**
        * Here we're handling the case of accessed the same dep multiple
        * times within the same run with other deps accessed in between them
        */
       const activeRun = sub.activeRun;
-      if (activeRun?.[dep.id]) return;
+      if (hadId && activeRun?.[depId]) return;
 
       /**
        * Here we're handling the case of on subsequent runs the deps are
@@ -77,7 +82,13 @@ export function createReactiveSystem({
       if (running) {
         nextDep = prevDep ? prevDep.nextDep : sub.depsHead;
         if (nextDep?.dep === dep) {
-          if (activeRun) activeRun[dep.id] = nextDep;
+          if (activeRun) activeRun[depId] = nextDep;
+          else if (prevDep)
+            sub.activeRun = {
+              [prevDep.dep.id!]: prevDep,
+              [depId]: nextDep,
+            };
+
           sub.depsTail = nextDep;
           return;
         }
@@ -89,19 +100,25 @@ export function createReactiveSystem({
       const prevSub = dep.subsTail;
       if (!running && prevSub?.sub === sub) return;
 
-      const oldLink = sub.prevRun?.[dep.id],
+      const oldLink = hadId ? sub.prevRun?.[depId] : undefined,
         newLink = (sub.depsTail = oldLink || { dep, sub, prevSub });
       newLink.nextDep = nextDep;
 
-      if (activeRun) activeRun[dep.id] = newLink;
+      if (activeRun) activeRun[depId] = newLink;
+      else if (prevDep)
+        sub.activeRun = {
+          [prevDep.dep.id!]: prevDep,
+          [depId]: newLink,
+        };
+
       if (prevDep) prevDep.nextDep = newLink;
       else sub.depsHead = newLink;
-      
+
       if (!oldLink) {
         if (prevSub) prevSub.nextSub = newLink;
         else dep.subsHead = newLink;
+
         dep.subsTail = newLink;
-        return newLink;
       }
     },
 
@@ -117,7 +134,6 @@ export function createReactiveSystem({
       sub.depsTail = undefined;
       sub.flags = ((sub.flags & ~DIRTY) | RUNNING) as Flags;
       sub.prevRun = sub.activeRun;
-      sub.activeRun = {};
     },
 
     /**
@@ -199,12 +215,13 @@ export function createReactiveSystem({
       let sub: ReactiveNode,
         flags: Flags,
         branch: LinkNode | undefined,
-        targetFlags = link.dep.flags & COMPUTED ? PENDING : STALE;
+        targetFlags: Flags;
       queue[queueSize++] = link;
 
       while (queueIndex < queueSize) {
         link = queue[queueIndex]!;
         queue[queueIndex++] = undefined;
+        targetFlags = link.dep.flags & COMPUTED ? PENDING : STALE;
 
         do {
           sub = link.sub;
@@ -213,9 +230,9 @@ export function createReactiveSystem({
 
           if (flags & PROPAGATING) continue;
           if (flags & EFFECT) notify(sub);
-          else if ((branch = sub.subsHead)) queue[queueSize++] = branch;
+          else if ((branch = sub.subsHead) && (flags & COMPUTED || update(sub)))
+            queue[queueSize++] = branch;
         } while ((link = link.nextSub!));
-        targetFlags = PENDING;
       }
       queueSize = queueIndex = 0;
     },
@@ -232,7 +249,7 @@ export function createReactiveSystem({
      * @param link - The starting link representing a sequence of PENDING computed.
      * @returns `true` if an updated path was found, otherwise `false`.
      */
-    checkDirty(link: LinkNode) {
+    settleDirty(link: LinkNode) {
       const stack: LinkNode[] = [];
       let depth = 0,
         dep: ReactiveNode,
@@ -244,8 +261,8 @@ export function createReactiveSystem({
 
         if (link !== stack[depth]) {
           if (
-            (dep = link.dep).version > sub.version ||
-            ((flags = dep.flags) & STALE && update(dep))
+            ((flags = (dep = link.dep).flags) & STALE && update(dep)) ||
+            dep.version > sub.version
           ) {
             while (depth--)
               if (!update((link = stack[depth]).dep)) continue top;
