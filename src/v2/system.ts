@@ -1,11 +1,15 @@
+interface DepMap {
+  [id: number]: LinkNode;
+}
+
 export interface ReactiveNode {
   subsHead?: LinkNode;
   subsTail?: LinkNode;
   depsHead?: LinkNode;
   depsTail?: LinkNode;
   id?: number;
-  activeRun?: { [id: number]: LinkNode };
-  prevRun?: { [id: number]: LinkNode };
+  activeRun?: DepMap;
+  prevRun?: DepMap;
   flags: Flags;
   version: number;
 }
@@ -51,75 +55,55 @@ export function createReactiveSystem({
      * @param sub - The subscriber that depends on this dependency.
      */
     link(dep: ReactiveNode, sub: ReactiveNode) {
-      /**
-       * Here we're handling the case of accessing the same dep multiple
-       * times within the same run with no deps accessed in between them
-       */
       const prevDep = sub.depsTail;
-      if (prevDep?.dep === dep) return;
+      let nextDep: LinkNode | undefined,
+        activeRun: DepMap | undefined,
+        depId = dep.id,
+        wasLiked = true;
 
-      let depId = dep.id,
-        hadId: boolean = true;
       if (depId === undefined) {
         dep.id = depId = id++;
-        hadId = false;
+        wasLiked = false;
       }
 
-      /**
-       * Here we're handling the case of accessed the same dep multiple
-       * times within the same run with other deps accessed in between them
-       */
-      const activeRun = sub.activeRun;
-      if (hadId && activeRun?.[depId]) return;
+      if (sub.flags & RUNNING)
+        if (prevDep) {
+          activeRun = sub.activeRun;
 
-      /**
-       * Here we're handling the case of on subsequent runs the deps are
-       * accessed in the same order as the run before them otherwise we
-       * start from the top (e.g., sub.depsHead)
-       */
-      const running = sub.flags & RUNNING;
-      let nextDep: LinkNode | undefined;
-      if (running) {
-        nextDep = prevDep ? prevDep.nextDep : sub.depsHead;
-        if (nextDep?.dep === dep) {
-          if (activeRun) activeRun[depId] = nextDep;
-          else if (prevDep)
-            sub.activeRun = {
-              [prevDep.dep.id!]: prevDep,
-              [depId]: nextDep,
-            };
+          if ((nextDep = prevDep.nextDep) && nextDep.dep === dep) {
+            if (activeRun) activeRun[depId] = nextDep;
+            else
+              sub.activeRun = { [prevDep.dep.id!]: prevDep, [depId]: nextDep };
+            sub.depsTail = nextDep;
+            return;
+          }
 
+          if (prevDep.dep === dep) return;
+          if (wasLiked && activeRun?.[depId]) return;
+        } else if ((nextDep = sub.depsHead) && nextDep.dep === dep) {
           sub.depsTail = nextDep;
           return;
         }
-      }
 
-      /**
-       * TODO figure out when is this case needed
-       */
-      const prevSub = dep.subsTail;
-      if (!running && prevSub?.sub === sub) return;
+      let newLink: LinkNode;
 
-      const oldLink = hadId ? sub.prevRun?.[depId] : undefined,
-        newLink = (sub.depsTail = oldLink || { dep, sub, prevSub });
-      newLink.nextDep = nextDep;
+      if (wasLiked && (newLink = sub.prevRun?.[depId]!))
+        newLink.nextDep = nextDep;
+      else {
+        const prevSub = dep.subsTail;
+        newLink = sub.depsTail = { dep, sub, prevSub, nextDep };
 
-      if (activeRun) activeRun[depId] = newLink;
-      else if (prevDep)
-        sub.activeRun = {
-          [prevDep.dep.id!]: prevDep,
-          [depId]: newLink,
-        };
-
-      if (prevDep) prevDep.nextDep = newLink;
-      else sub.depsHead = newLink;
-
-      if (!oldLink) {
         if (prevSub) prevSub.nextSub = newLink;
         else dep.subsHead = newLink;
 
         dep.subsTail = newLink;
       }
+
+      if (prevDep) {
+        prevDep.nextDep = newLink;
+        if (activeRun) activeRun[depId] = newLink;
+        else sub.activeRun = { [prevDep.dep.id!]: prevDep, [depId]: newLink };
+      } else sub.depsHead = newLink;
     },
 
     /**

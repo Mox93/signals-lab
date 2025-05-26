@@ -21,7 +21,18 @@ console.log(`derived: ${((end - start) / 1024).toFixed(2)} KB`);
 
 start = end;
 
-Array.from({ length: 10000 }, (_, i) => effect(() => derived[i].value));
+const computed = Array.from({ length: 10000 }, (_, i) =>
+  derived[i]((v) => v ** 2)
+);
+
+globalThis.gc();
+end = process.memoryUsage().heapUsed;
+
+console.log(`computed: ${((end - start) / 1024).toFixed(2)} KB`);
+
+start = end;
+
+Array.from({ length: 10000 }, (_, i) => effect(() => computed[i].value));
 
 globalThis.gc();
 end = process.memoryUsage().heapUsed;
