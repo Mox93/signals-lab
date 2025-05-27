@@ -64,6 +64,27 @@ export interface DerivedSignal<T = unknown> extends SignalProducer<T> {
   readonly value: T;
 }
 
+//#region variables
+const SIGNAL = Symbol("signal"),
+  QUEUED = (1 << 5) as Flags,
+  NEW_COMPUTED = (COMPUTED | STALE) as Flags,
+  batchQueue: (EffectNode | undefined)[] = [],
+  BRAND_VALUE = {
+    value: true,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  } as const;
+
+let batchDepth = 0,
+  batchIndex = 0,
+  batchSize = 0,
+  // version = 0,
+  activeSub: ReactiveNode | undefined,
+  activeRoot: RootNode | undefined;
+//#endregion
+
+//#region Public functions
 /**
  * const x = signal(1);
  * const y = x(v => v + 1); // evaluates on push
@@ -71,8 +92,6 @@ export interface DerivedSignal<T = unknown> extends SignalProducer<T> {
  * const a = computed(() => Array.from({length: x.value}), () => "Hello World"); // evaluates on pull
  * const b = a(v => v[0].toUpperCase());  // evaluates on pull
  */
-
-//#region Public functions
 export function signal<T>(): Signal<T | undefined>;
 export function signal<T>(fn: () => T): DerivedSignal<T>;
 export function signal<T>(fn: () => T, initialValue: T): DerivedSignal<T>;
@@ -81,30 +100,24 @@ export function signal(valueOrFn?: unknown, initialValue?: unknown) {
   let node: SignalNode;
   const instance =
     typeof valueOrFn === "function"
-      ? Object.setPrototypeOf(
-          factory.bind(
-            (node = {
-              value: initialValue,
-              fn: valueOrFn as () => unknown,
-              flags: STALE,
-              // version: 0,
-              producer: signal,
-              source: null as never,
-            })
-          ),
-          readOnlyValue
+      ? derivedFactory.bind(
+          (node = {
+            value: initialValue,
+            fn: valueOrFn as () => unknown,
+            flags: STALE,
+            // version: 0,
+            producer: signal,
+            source: null as never,
+          })
         )
-      : Object.setPrototypeOf(
-          factory.bind(
-            (node = {
-              value: valueOrFn,
-              flags: 0 as Flags,
-              // version: 0,
-              producer: signal,
-              source: null as never,
-            })
-          ),
-          readWriteValue
+      : sourceFactory.bind(
+          (node = {
+            value: valueOrFn,
+            flags: 0 as Flags,
+            // version: 0,
+            producer: signal,
+            source: null as never,
+          })
         );
   node.source = instance;
   return instance;
@@ -122,18 +135,15 @@ export function computed(
   initialValue?: unknown
 ) {
   let node: ComputedNode;
-  const instance = Object.setPrototypeOf(
-    factory.bind(
-      (node = {
-        value: initialValue,
-        fn,
-        flags: NEW_COMPUTED,
-        // version: 0,
-        producer: computed,
-        source: null as never,
-      })
-    ),
-    readOnlyValue
+  const instance = derivedFactory.bind(
+    (node = {
+      value: initialValue,
+      fn,
+      flags: NEW_COMPUTED,
+      // version: 0,
+      producer: computed,
+      source: null as never,
+    })
   );
 
   node.source = instance;
@@ -200,56 +210,50 @@ export function root(fn: (dispose: () => void) => void) {
 //#endregion
 
 //#region Bound functions
-function factory<T extends SignalNode | ComputedNode>(
-  this: T,
-  key: typeof SIGNAL
-): T;
-function factory<T extends SignalNode | ComputedNode>(
-  this: T,
-  fn: Function,
-  initialValue?: unknown
-): DerivedSignal;
-function factory(
-  this: SignalNode | ComputedNode,
-  keyOrFn: typeof SIGNAL | Function,
-  initialValue?: unknown
-) {
-  if (keyOrFn === SIGNAL) return this;
-  return this.producer(() => keyOrFn(this.source.value), initialValue);
-}
+const sourceFactory = Object.setPrototypeOf(
+  factory(),
+  Object.create(Function.prototype, {
+    [SIGNAL]: BRAND_VALUE,
+    value: {
+      get(this: NodeHolder<SignalNode>) {
+        const node = this(SIGNAL);
+        if (activeSub) link(node, activeSub);
+        return node.value;
+      },
+      set(this: NodeHolder<SignalNode>, value: unknown) {
+        const node = this(SIGNAL);
+        if (node.value === value) return;
+        node.value = value;
+        const subs = node.subsHead;
+        if (subs) {
+          // node.version = ++version;
+          propagate(subs);
+          if (!batchDepth) flush();
+        }
+      },
+    },
+  })
+);
 
-const readWriteValue = Object.defineProperty(markedSignal(), "value", {
-  get(this: NodeHolder<SignalNode>) {
-    const node = this(SIGNAL);
-    if (activeSub) link(node, activeSub);
-    return node.value;
-  },
-  set(this: NodeHolder<SignalNode>, value: unknown) {
-    const node = this(SIGNAL);
-    if (node.value === value) return;
-    node.value = value;
-    const subs = node.subsHead;
-    if (subs) {
-      // node.version = ++version;
-      propagate(subs);
-      if (!batchDepth) flush();
-    }
-  },
-});
-
-const readOnlyValue = Object.defineProperty(markedSignal(), "value", {
-  get(this: NodeHolder<ComputedNode>) {
-    const node = this(SIGNAL),
-      flags = node.flags;
-    if (activeSub && activeSub !== node) link(node, activeSub);
-    if (flags & STALE || (flags & PENDING && checkDirty(node.depsHead!)))
-      if (updateComputed(node)) {
-        const subsHead = node.subsHead;
-        if (subsHead) shallowPropagate(subsHead);
-      }
-    return node.value;
-  },
-});
+const derivedFactory = Object.setPrototypeOf(
+  factory(),
+  Object.create(Function.prototype, {
+    [SIGNAL]: BRAND_VALUE,
+    value: {
+      get(this: NodeHolder<ComputedNode>) {
+        const node = this(SIGNAL),
+          flags = node.flags;
+        if (activeSub && activeSub !== node) link(node, activeSub);
+        if (flags & STALE || (flags & PENDING && checkDirty(node.depsHead!)))
+          if (updateComputed(node)) {
+            const subsHead = node.subsHead;
+            if (subsHead) shallowPropagate(subsHead);
+          }
+        return node.value;
+      },
+    },
+  })
+);
 
 function batchHandler(this: Function, ...args: unknown[]) {
   batchDepth++;
@@ -269,18 +273,6 @@ function unlink(this: ReactiveNode) {
 //#endregion
 
 //#region Internal functions
-const SIGNAL = Symbol("signal"),
-  QUEUED = (1 << 5) as Flags,
-  NEW_COMPUTED = (COMPUTED | STALE) as Flags,
-  batchQueue: (EffectNode | undefined)[] = [];
-
-let batchDepth = 0,
-  batchIndex = 0,
-  batchSize = 0,
-  // version = 0,
-  activeSub: ReactiveNode | undefined,
-  activeRoot: RootNode | undefined;
-
 const {
   link,
   startTracking,
@@ -350,12 +342,17 @@ function flush() {
   batchSize = batchIndex = 0;
 }
 
-function markedSignal() {
-  return Object.defineProperty({}, SIGNAL, {
-    value: true,
-    writable: false,
-    enumerable: false,
-    configurable: false,
-  }) as { readonly [SIGNAL]: true; value: unknown };
+function factory(): {
+  <T extends SignalNode | ComputedNode>(this: T, key: typeof SIGNAL): T;
+  <T extends SignalNode | ComputedNode>(
+    this: T,
+    fn: Function,
+    initialValue?: unknown
+  ): DerivedSignal;
+} {
+  return function (this, keyOrFn, initialValue?: unknown) {
+    if (keyOrFn === SIGNAL) return this;
+    return this.producer(() => keyOrFn(this.source.value), initialValue);
+  };
 }
 //#endregion
