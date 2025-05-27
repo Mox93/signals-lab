@@ -1,1 +1,1 @@
-export { batch, batched, effect, signal, untrack } from "./v2";
+export { batch, batched, computed, effect, signal, untrack } from "./v2";

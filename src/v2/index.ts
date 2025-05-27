@@ -37,7 +37,7 @@ interface EffectNode extends ReactiveNode {
 interface SignalNode<T = unknown> extends ReactiveNode {
   value: T;
   fn?(): T;
-  producer<T>(fn: () => T): DerivedSignal<T>;
+  producer<T>(fn: () => T, initialValue?: T): DerivedSignal<T>;
   source: { readonly value: T };
 }
 
@@ -87,7 +87,7 @@ export function signal(valueOrFn?: unknown, initialValue?: unknown) {
               value: initialValue,
               fn: valueOrFn as () => unknown,
               flags: STALE,
-              version: 0,
+              // version: 0,
               producer: signal,
               source: null as never,
             })
@@ -99,7 +99,7 @@ export function signal(valueOrFn?: unknown, initialValue?: unknown) {
             (node = {
               value: valueOrFn,
               flags: 0 as Flags,
-              version: 0,
+              // version: 0,
               producer: signal,
               source: null as never,
             })
@@ -128,7 +128,7 @@ export function computed(
         value: initialValue,
         fn,
         flags: NEW_COMPUTED,
-        version: 0,
+        // version: 0,
         producer: computed,
         source: null as never,
       })
@@ -172,7 +172,7 @@ export function untrack(signalOrFn: Function) {
 }
 
 export function effect(fn: () => void) {
-  const e: EffectNode = { fn, flags: EFFECT, version: 0 };
+  const e: EffectNode = { fn, flags: EFFECT /* version: 0 */ };
   if (activeSub) link(e, activeSub);
   else if (activeRoot) link(e, activeRoot);
   runEffect(e);
@@ -180,7 +180,7 @@ export function effect(fn: () => void) {
 }
 
 export function root(fn: (dispose: () => void) => void) {
-  const r: RootNode = { flags: EFFECT, version: 0 };
+  const r: RootNode = { flags: EFFECT /* version: 0 */ };
   if (activeRoot) link(r, activeRoot);
   const prevSub = activeSub;
   activeSub = undefined;
@@ -206,14 +206,16 @@ function factory<T extends SignalNode | ComputedNode>(
 ): T;
 function factory<T extends SignalNode | ComputedNode>(
   this: T,
-  fn: Function
+  fn: Function,
+  initialValue?: unknown
 ): DerivedSignal;
 function factory(
   this: SignalNode | ComputedNode,
-  keyOrFn: typeof SIGNAL | Function
+  keyOrFn: typeof SIGNAL | Function,
+  initialValue?: unknown
 ) {
   if (keyOrFn === SIGNAL) return this;
-  return this.producer(() => keyOrFn(this.source.value));
+  return this.producer(() => keyOrFn(this.source.value), initialValue);
 }
 
 const readWriteValue = Object.defineProperty(markedSignal(), "value", {
@@ -228,7 +230,7 @@ const readWriteValue = Object.defineProperty(markedSignal(), "value", {
     node.value = value;
     const subs = node.subsHead;
     if (subs) {
-      node.version = ++version;
+      // node.version = ++version;
       propagate(subs);
       if (!batchDepth) flush();
     }
@@ -240,8 +242,11 @@ const readOnlyValue = Object.defineProperty(markedSignal(), "value", {
     const node = this(SIGNAL),
       flags = node.flags;
     if (activeSub && activeSub !== node) link(node, activeSub);
-    if (flags & STALE || (flags & PENDING && settleDirty(node.depsHead!)))
-      updateComputed(node);
+    if (flags & STALE || (flags & PENDING && checkDirty(node.depsHead!)))
+      if (updateComputed(node)) {
+        const subsHead = node.subsHead;
+        if (subsHead) shallowPropagate(subsHead);
+      }
     return node.value;
   },
 });
@@ -265,23 +270,35 @@ function unlink(this: ReactiveNode) {
 
 //#region Internal functions
 const SIGNAL = Symbol("signal"),
+  QUEUED = (1 << 5) as Flags,
   NEW_COMPUTED = (COMPUTED | STALE) as Flags,
   batchQueue: (EffectNode | undefined)[] = [];
 
 let batchDepth = 0,
   batchIndex = 0,
   batchSize = 0,
-  version = 0,
+  // version = 0,
   activeSub: ReactiveNode | undefined,
   activeRoot: RootNode | undefined;
 
-const { link, startTracking, endTracking, propagate, settleDirty } =
-  createReactiveSystem({
-    update: updateComputed,
-    notify(effect: EffectNode) {
+const {
+  link,
+  startTracking,
+  endTracking,
+  propagate,
+  checkDirty,
+  shallowPropagate,
+} = createReactiveSystem({
+  update: updateComputed,
+  notify(effect: EffectNode) {
+    const flags = effect.flags;
+
+    if (!(flags & QUEUED)) {
       batchQueue[batchSize++] = effect;
-    },
-  });
+      effect.flags = (flags | QUEUED) as Flags;
+    }
+  },
+});
 
 function updateComputed(c: ComputedNode) {
   const prevSub = activeSub;
@@ -292,7 +309,7 @@ function updateComputed(c: ComputedNode) {
     const newValue = c.fn(oldValue);
     if (newValue === oldValue) return false;
     c.value = newValue;
-    c.version = ++version;
+    // c.version = ++version;
     return true;
   } catch (error) {
     if (__DEV__) console.error(error);
@@ -309,7 +326,7 @@ function runEffect(e: EffectNode) {
   startTracking(e);
   try {
     e.fn();
-    e.version = ++version;
+    // e.version = ++version;
   } catch (error) {
     if (__DEV__) console.error(error);
   } finally {
@@ -324,10 +341,10 @@ function flush() {
   while (batchIndex < batchSize) {
     effect = batchQueue[batchIndex]!;
     batchQueue[batchIndex++] = undefined;
-    if (
-      (flags = effect.flags) & STALE ||
-      (flags & PENDING && settleDirty(effect.depsHead!))
-    )
+    flags = effect.flags;
+    effect.flags = (flags & ~QUEUED) as Flags;
+
+    if (flags & STALE || (flags & PENDING && checkDirty(effect.depsHead!)))
       runEffect(effect);
   }
   batchSize = batchIndex = 0;
