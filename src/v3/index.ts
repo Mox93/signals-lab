@@ -1,46 +1,17 @@
 import {
   COMPUTED,
-  createReactiveSystem,
   EFFECT,
-  type Flags,
-  PENDING,
-  type ReactiveNode,
-  RUNNING,
+  endTracking,
+  Flags,
+  createQueueFlush,
+  link,
+  queuePush,
+  ReactiveNode,
   STALE,
+  startTracking,
 } from "./system";
 
 const __DEV__ = true;
-
-if (__DEV__) {
-  const FLAGS = [
-    ["COMPUTED", COMPUTED],
-    ["EFFECT", EFFECT],
-    ["STALE", STALE],
-    ["PENDING", PENDING],
-    ["RUNNING", RUNNING],
-  ] as const;
-  Object.assign(globalThis, {
-    inspect(holder: NodeHolder<SignalNode | ComputedNode>) {
-      const node = holder(SIGNAL);
-      const {
-        subsHead,
-        subsTail,
-        depsHead,
-        depsTail,
-        run,
-        runId,
-        flags,
-        ...rest
-      } = node;
-      const view = { ...rest, flags: [] as string[] };
-      for (const [key, value] of FLAGS) if (flags & value) view.flags.push(key);
-      if (!view.flags.includes("COMPUTED")) view.flags.push("SIGNAL");
-      console.log(
-        JSON.stringify({ ...view, flags: view.flags.toString() }, null, 2)
-      );
-    },
-  });
-}
 
 interface RootNode extends ReactiveNode {}
 
@@ -53,6 +24,7 @@ interface SignalNode<T = unknown> extends ReactiveNode {
   fn?(): T;
   producer<T>(fn: () => T, initialValue?: T): DerivedSignal<T>;
   source: { readonly value: T };
+  version: number;
 }
 
 interface ComputedNode<T = unknown> extends ReactiveNode {
@@ -80,9 +52,7 @@ export interface DerivedSignal<T = unknown> extends SignalProducer<T> {
 
 //#region variables
 const SIGNAL = Symbol("signal"),
-  QUEUED = (1 << 5) as Flags,
   NEW_COMPUTED = (COMPUTED | STALE) as Flags,
-  batchQueue: (EffectNode | undefined)[] = [],
   BRAND_VALUE = {
     value: true,
     writable: false,
@@ -90,77 +60,48 @@ const SIGNAL = Symbol("signal"),
     configurable: false,
   } as const;
 
-let batchDepth = 0,
-  batchIndex = 0,
-  batchSize = 0,
+let id = 0,
+  batchDepth = 0,
+  version = 0,
   activeSub: ReactiveNode | undefined,
   activeRoot: RootNode | undefined;
 //#endregion
 
 //#region Public functions
-/**
- * const x = signal(1);
- * const y = x(v => v + 1); // evaluates on push
- * const z = signal(() => x.value + y.value); // evaluates on push
- * const a = computed(() => Array.from({length: x.value}), () => "Hello World"); // evaluates on pull
- * const b = a(v => v[0].toUpperCase());  // evaluates on pull
- */
 export function signal<T>(): Signal<T | undefined>;
 export function signal<T>(fn: () => T): DerivedSignal<T>;
 export function signal<T>(fn: () => T, initialValue: T): DerivedSignal<T>;
 export function signal<T>(value: T): Signal<T>;
 export function signal(valueOrFn?: unknown, initialValue?: unknown) {
-  let node: SignalNode;
+  let node: SignalNode | ComputedNode;
   const instance =
     typeof valueOrFn === "function"
       ? derivedFactory.bind(
           (node = {
+            id: id++,
             value: initialValue,
             fn: valueOrFn as () => unknown,
-            flags: STALE,
+            flags: NEW_COMPUTED,
             run: {},
             runId: 0,
+            depth: -1,
             producer: signal,
             source: null as never,
           })
         )
       : sourceFactory.bind(
           (node = {
+            id: id++,
             value: valueOrFn,
             flags: 0 as Flags,
+            run: {},
             runId: 0,
+            depth: -1,
             producer: signal,
             source: null as never,
+            version: -1,
           })
         );
-  node.source = instance;
-  return instance;
-}
-
-export function computed<T>(
-  fn: (previousValue: T | undefined) => T
-): DerivedSignal<T>;
-export function computed<T>(
-  fn: (previousValue: T) => T,
-  initialValue: T
-): DerivedSignal<T>;
-export function computed(
-  fn: (previousValue: unknown) => unknown,
-  initialValue?: unknown
-) {
-  let node: ComputedNode;
-  const instance = derivedFactory.bind(
-    (node = {
-      value: initialValue,
-      fn,
-      flags: NEW_COMPUTED,
-      run: {},
-      runId: 0,
-      producer: computed,
-      source: null as never,
-    })
-  );
-
   node.source = instance;
   return instance;
 }
@@ -194,15 +135,22 @@ export function untrack(signalOrFn: Function) {
 }
 
 export function effect(fn: () => void) {
-  const e: EffectNode = { fn, flags: EFFECT, run: {}, runId: 0 };
+  const e: EffectNode = {
+    id: id++,
+    fn,
+    flags: EFFECT,
+    run: {},
+    runId: 0,
+    depth: -1,
+  };
+  runEffect(e);
   if (activeSub) link(e, activeSub);
   else if (activeRoot) link(e, activeRoot);
-  runEffect(e);
   return unlink.bind(e);
 }
 
 export function root(fn: (dispose: () => void) => void) {
-  const r: RootNode = { flags: EFFECT, runId: 0 };
+  const r: RootNode = { id: id++, flags: EFFECT, runId: 0, depth: -1 };
   if (activeRoot) link(r, activeRoot);
   const prevSub = activeSub;
   activeSub = undefined;
@@ -221,87 +169,8 @@ export function root(fn: (dispose: () => void) => void) {
 }
 //#endregion
 
-//#region Bound functions
-const sourceFactory = Object.setPrototypeOf(
-  factory(),
-  Object.create(Function.prototype, {
-    [SIGNAL]: BRAND_VALUE,
-    value: {
-      get(this: NodeHolder<SignalNode>) {
-        const node = this(SIGNAL);
-        if (activeSub) link(node, activeSub);
-        return node.value;
-      },
-      set(this: NodeHolder<SignalNode>, value: unknown) {
-        const node = this(SIGNAL);
-        if (node.value === value) return;
-        node.value = value;
-        const subs = node.subsHead;
-        if (subs) {
-          propagate(subs);
-          if (!batchDepth) flush();
-        }
-      },
-    },
-  })
-);
-
-const derivedFactory = Object.setPrototypeOf(
-  factory(),
-  Object.create(Function.prototype, {
-    [SIGNAL]: BRAND_VALUE,
-    value: {
-      get(this: NodeHolder<ComputedNode>) {
-        const node = this(SIGNAL),
-          flags = node.flags;
-        if (activeSub && activeSub !== node) link(node, activeSub);
-        if (flags & STALE || (flags & PENDING && checkDirty(node.depsHead!)))
-          if (updateComputed(node)) {
-            const subs = node.subsHead;
-            if (subs) shallowPropagate(subs);
-          }
-        return node.value;
-      },
-    },
-  })
-);
-
-function batchHandler(this: Function, ...args: unknown[]) {
-  batchDepth++;
-  try {
-    return this.apply(this, args);
-  } catch (error) {
-    if (__DEV__) console.error(error);
-  } finally {
-    if (!--batchDepth) flush();
-  }
-}
-
-function unlink(this: ReactiveNode) {
-  startTracking(this);
-  endTracking(this);
-}
-//#endregion
-
 //#region Internal functions
-const {
-  link,
-  startTracking,
-  endTracking,
-  propagate,
-  checkDirty,
-  shallowPropagate,
-} = createReactiveSystem({
-  update: updateComputed,
-  notify(effect: EffectNode) {
-    const flags = effect.flags;
-
-    if (!(flags & QUEUED)) {
-      batchQueue[batchSize++] = effect;
-      effect.flags = (flags | QUEUED) as Flags;
-    }
-  },
-});
+const queueFlush = createQueueFlush({ updateComputed, runEffect });
 
 function updateComputed(c: ComputedNode) {
   const prevSub = activeSub;
@@ -336,21 +205,6 @@ function runEffect(e: EffectNode) {
   }
 }
 
-function flush() {
-  let effect: EffectNode, flags: Flags;
-
-  while (batchIndex < batchSize) {
-    effect = batchQueue[batchIndex]!;
-    batchQueue[batchIndex++] = undefined;
-    flags = effect.flags;
-    effect.flags = (flags & ~QUEUED) as Flags;
-
-    if (flags & STALE || (flags & PENDING && checkDirty(effect.depsHead!)))
-      runEffect(effect);
-  }
-  batchSize = batchIndex = 0;
-}
-
 function factory(): {
   <T extends SignalNode | ComputedNode>(this: T, key: typeof SIGNAL): T;
   <T extends SignalNode | ComputedNode>(
@@ -363,5 +217,79 @@ function factory(): {
     if (keyOrFn === SIGNAL) return this;
     return this.producer(() => keyOrFn(this.source.value), initialValue);
   };
+}
+//#endregion
+
+//#region Bound functions
+const sourceFactory = Object.setPrototypeOf(
+  factory(),
+  Object.create(Function.prototype, {
+    [SIGNAL]: BRAND_VALUE,
+    value: {
+      get(this: NodeHolder<SignalNode>) {
+        const node = this(SIGNAL);
+        if (activeSub) link(node, activeSub);
+        return node.value;
+      },
+      set(this: NodeHolder<SignalNode>, value: unknown) {
+        const node = this(SIGNAL);
+        if (node.value === value) return;
+        node.value = value;
+        const subs = node.subsHead;
+        if (subs) {
+          if (batchDepth) {
+            if (node.version !== version) {
+              node.version = version;
+              queuePush(subs);
+            }
+          } else {
+            queuePush(subs);
+            queueFlush();
+          }
+        }
+      },
+    },
+  })
+);
+
+const derivedFactory = Object.setPrototypeOf(
+  factory(),
+  Object.create(Function.prototype, {
+    [SIGNAL]: BRAND_VALUE,
+    value: {
+      get(this: NodeHolder<ComputedNode>) {
+        const node = this(SIGNAL),
+          isStale = node.flags & STALE;
+        if (isStale) updateComputed(node);
+        if (activeSub && activeSub !== node) {
+          const depDepth = node.depth,
+            subDepth = activeSub.depth;
+          link(node, activeSub);
+          if (depDepth > subDepth) queueFlush(depDepth);
+        }
+
+        return node.value;
+      },
+    },
+  })
+);
+
+function batchHandler(this: Function, ...args: unknown[]) {
+  batchDepth++;
+  try {
+    return this.apply(this, args);
+  } catch (error) {
+    if (__DEV__) console.error(error);
+  } finally {
+    if (!--batchDepth) {
+      queueFlush();
+      version++;
+    }
+  }
+}
+
+function unlink(this: ReactiveNode) {
+  startTracking(this);
+  endTracking(this);
 }
 //#endregion

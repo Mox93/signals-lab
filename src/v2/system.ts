@@ -1,5 +1,5 @@
 interface DepMap {
-  [id: number]: LinkNode;
+  [id: number]: LinkNode | undefined;
 }
 
 export interface ReactiveNode {
@@ -8,13 +8,13 @@ export interface ReactiveNode {
   depsHead?: LinkNode;
   depsTail?: LinkNode;
   id?: number;
-  activeRun?: DepMap;
-  prevRun?: DepMap;
+  run?: DepMap;
+  runId: number;
   flags: Flags;
-  // version: number;
 }
 
 export interface LinkNode {
+  runId: number;
   sub: ReactiveNode;
   dep: ReactiveNode;
   prevSub?: LinkNode;
@@ -34,8 +34,8 @@ const DIRTY = STALE | PENDING,
   PROPAGATING = DIRTY | RUNNING;
 
 interface ReactiveSystemActions {
-  update(relayer: ReactiveNode): boolean;
-  notify(watcher: ReactiveNode): void;
+  update(computed: ReactiveNode): boolean;
+  notify(effect: ReactiveNode): void;
 }
 
 export function createReactiveSystem({
@@ -64,53 +64,46 @@ export function createReactiveSystem({
    */
   function link(dep: ReactiveNode, sub: ReactiveNode) {
     const prevDep = sub.depsTail;
+    if (prevDep && prevDep.dep === dep) return;
+
+    const run = sub.run,
+      runId = sub.runId;
     let nextDep: LinkNode | undefined,
-      activeRun: DepMap | undefined,
-      depId = dep.id,
-      wasLiked = true;
+      newLink: LinkNode | undefined,
+      depId = dep.id;
 
-    if (depId === undefined) {
-      dep.id = depId = id++;
-      wasLiked = false;
-    }
-
-    if (sub.flags & RUNNING)
-      if (prevDep) {
-        activeRun = sub.activeRun;
-
-        if ((nextDep = prevDep.nextDep) && nextDep.dep === dep) {
-          if (activeRun) activeRun[depId] = nextDep;
-          else sub.activeRun = { [prevDep.dep.id!]: prevDep, [depId]: nextDep };
+    linkCreation: {
+      if (run) {
+        nextDep = prevDep ? prevDep.nextDep : sub.depsHead;
+        if (nextDep && nextDep.dep === dep) {
+          nextDep.runId = runId;
           sub.depsTail = nextDep;
           return;
         }
 
-        if (prevDep.dep === dep) return;
-        if (wasLiked && activeRun?.[depId]) return;
-      } else if ((nextDep = sub.depsHead) && nextDep.dep === dep) {
-        sub.depsTail = nextDep;
-        return;
+        if (depId === undefined) dep.id = depId = id++;
+        else if ((newLink = run[depId])) {
+          if (newLink.runId === runId) return;
+
+          newLink.runId = runId;
+          newLink.nextDep = nextDep;
+          break linkCreation;
+        }
       }
 
-    let newLink: LinkNode;
-
-    if (wasLiked && (newLink = sub.prevRun?.[depId]!))
-      newLink.nextDep = nextDep;
-    else {
       const prevSub = dep.subsTail;
-      newLink = sub.depsTail = { dep, sub, prevSub, nextDep };
+      newLink = dep.subsTail = { runId, dep, sub, prevSub, nextDep };
 
       if (prevSub) prevSub.nextSub = newLink;
       else dep.subsHead = newLink;
 
-      dep.subsTail = newLink;
+      if (run) run[depId!] = newLink;
     }
 
-    if (prevDep) {
-      prevDep.nextDep = newLink;
-      if (activeRun) activeRun[depId] = newLink;
-      else sub.activeRun = { [prevDep.dep.id!]: prevDep, [depId]: newLink };
-    } else sub.depsHead = newLink;
+    sub.depsTail = newLink;
+
+    if (prevDep) prevDep.nextDep = newLink;
+    else sub.depsHead = newLink;
   }
 
   /**
@@ -124,7 +117,7 @@ export function createReactiveSystem({
   function startTracking(sub: ReactiveNode) {
     sub.depsTail = undefined;
     sub.flags = ((sub.flags & ~DIRTY) | RUNNING) as Flags;
-    sub.prevRun = sub.activeRun;
+    sub.runId = ++sub.runId & 1;
   }
 
   /**
@@ -139,9 +132,7 @@ export function createReactiveSystem({
     let depsTail = sub.depsTail,
       nextDep: LinkNode | undefined,
       link: LinkNode | undefined,
-      dep: ReactiveNode,
-      nextSub: LinkNode | undefined,
-      prevSub: LinkNode | undefined;
+      run: DepMap | undefined;
 
     if (!depsTail) {
       link = sub.depsHead;
@@ -150,6 +141,13 @@ export function createReactiveSystem({
       link = nextDep;
       depsTail.nextDep = undefined;
     }
+
+    sub.flags = (sub.flags & ~RUNNING) as Flags;
+    if (!link) return;
+
+    let dep: ReactiveNode,
+      nextSub: LinkNode | undefined,
+      prevSub: LinkNode | undefined;
 
     /**
      * Clears dependency-subscription relationships starting at the given link.
@@ -168,6 +166,8 @@ export function createReactiveSystem({
 
       if (prevSub) prevSub.nextSub = nextSub;
       else dep.subsHead = nextSub;
+
+      if ((run = link.sub.run)) run[dep.id!] = undefined;
 
       /**
        * In the case of the dependency having dependencies (i.e. computed signal),
@@ -188,9 +188,6 @@ export function createReactiveSystem({
       }
       link = nextDep;
     }
-
-    sub.prevRun = undefined;
-    sub.flags = (sub.flags & ~RUNNING) as Flags;
   }
 
   /**
@@ -247,23 +244,20 @@ export function createReactiveSystem({
       subsHead: LinkNode,
       flags: Flags;
 
-    top: while (link) {
-      sub = link.sub;
-
+    while (link) {
       if (link !== stack[depth]) {
         if (
-          (flags = (dep = link.dep).flags) & STALE &&
-          update(dep)
+          (flags = (dep = link.dep).flags) & STALE
           // || dep.version > sub.version
         ) {
-          subsHead = dep.subsHead!;
-          if (subsHead.nextSub) shallowPropagate(subsHead);
-          while (depth)
-            if (update((dep = (link = stack[--depth]).dep))) {
-              subsHead = dep.subsHead!;
-              if (subsHead.nextSub) shallowPropagate(subsHead);
-            } else continue top;
-          return true;
+          while (update(dep)) {
+            subsHead = dep.subsHead!;
+            if (subsHead.nextSub) shallowPropagate(subsHead);
+
+            if (depth) flags = (dep = (link = stack[--depth]).dep).flags;
+            else return true;
+          }
+          continue;
         }
 
         if (flags & PENDING) {
@@ -273,6 +267,7 @@ export function createReactiveSystem({
         }
       }
 
+      sub = link.sub;
       if (!(link = link.nextDep!)) {
         sub.flags = (sub.flags & ~DIRTY) as Flags;
         if (depth) link = stack[--depth];
@@ -286,8 +281,10 @@ export function createReactiveSystem({
     let sub: ReactiveNode, flags: Flags;
     while (link) {
       flags = (sub = link.sub).flags;
-      sub.flags = (flags | STALE) as Flags;
-      if (flags & EFFECT) notify(sub);
+      if (!(flags & RUNNING)) {
+        sub.flags = (flags | STALE) as Flags;
+        if (flags & EFFECT) notify(sub);
+      }
       link = link.nextSub!;
     }
   }

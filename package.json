@@ -12,7 +12,8 @@
     "build": "tsup src/* --format cjs,esm --dts",
     "dev": "tsup src/* --format cjs,esm --dts --watch",
     "bench": "pnpm build && node --jitless --expose-gc benchs/propagate.mjs",
-    "memory": "pnpm build && node --expose-gc benchs/memoryUsage.mjs"
+    "memory": "pnpm build && node --expose-gc benchs/memoryUsage.mjs",
+    "compare": "pnpm build && node --jitless --expose-gc benchs/compare.mjs"
   },
   "keywords": [
     "signals",

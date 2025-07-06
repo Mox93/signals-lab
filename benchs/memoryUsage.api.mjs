@@ -1,4 +1,4 @@
-import { effect, signal } from "../dist/index.mjs";
+import { computed, effect, signal } from "../dist/v2/api.mjs";
 
 globalThis.gc();
 let start = process.memoryUsage().heapUsed;
@@ -12,8 +12,17 @@ console.log(`signal: ${((end - start) / 1024).toFixed(2)} KB`);
 
 start = end;
 
+const derived = Array.from({ length: 10000 }, (_, i) => signals[i]((v) => ++v));
+
+globalThis.gc();
+end = process.memoryUsage().heapUsed;
+
+console.log(`derived: ${((end - start) / 1024).toFixed(2)} KB`);
+
+start = end;
+
 const computed = Array.from({ length: 10000 }, (_, i) =>
-  signals[i]((v) => ++v)
+  derived[i]((v) => v ** 2)
 );
 
 globalThis.gc();
