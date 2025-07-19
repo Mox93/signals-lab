@@ -34,7 +34,27 @@ export function createMinHeap<T extends HeapNode>(options: MinHeapOptions<T>) {
 
   const methods = { enqueue, flush, flushing };
 
-  if (testMode) Object.defineProperty(methods, "__test__", { value: {} });
+  if (testMode)
+    Object.defineProperty(methods, "__test__", {
+      value: {
+        get cache() {
+          return cache;
+        },
+        get queue() {
+          return heap;
+        },
+        get heapSize() {
+          return heapSize;
+        },
+        clear() {
+          cache.length = heap.length = heapSize = 0;
+          isFlushing = false;
+        },
+        getBucket(depth: number) {
+          return cache[depth];
+        },
+      },
+    });
 
   return methods;
 
@@ -159,7 +179,7 @@ export function createMinHeap<T extends HeapNode>(options: MinHeapOptions<T>) {
   }
 }
 
-function stringifyBucket<T extends HeapNode>(bucket: Bucket<T>) {
+export function stringifyBucket<T extends HeapNode>(bucket: Bucket<T>) {
   return `depth: ${bucket.depth}, size: ${bucket.size}, index: ${
     bucket.index
   }, slot: ${bucket.slot}, nodes: ${bucket.nodes.map(

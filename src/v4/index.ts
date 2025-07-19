@@ -13,6 +13,7 @@ interface ComputedNode extends ReactiveNode {
   fn(): Generator;
   slot?: number;
   running?: boolean;
+  recursive?: boolean;
   gen?: Generator;
   step?: IteratorResult<unknown>;
   prevDeps?: Set<ReactiveNode>;
@@ -72,11 +73,16 @@ export function effect(fn: () => Generator) {
   run(sub);
 }
 
+const { enqueue, flush, flushing } = createMinHeap({ run, propagate });
+
 function run(sub: ComputedNode) {
   if (sub.running) {
-    console.error("[ERROR] Circular dependency detected at", sub.id);
+    console.error(
+      "[ERROR] A circular dependency was detected on initialization."
+    );
     sub.gen = sub.step = sub.prevDeps = undefined;
-    sub.stale = sub.running = false;
+    sub.running = false;
+    sub.recursive = true;
     return;
   }
   sub.running = true;
@@ -112,7 +118,7 @@ function run(sub: ComputedNode) {
     while (!step.done) {
       target = step.value;
       if (!isSignal<InternalSignal>(target)) {
-        console.warn("Yielding non-signal value");
+        console.warn("[WARNING] Yielding non-signal value");
         step = gen.next(target);
         continue;
       }
@@ -126,14 +132,19 @@ function run(sub: ComputedNode) {
           run(dep);
           depDepth = dep.depth;
         } else if (!(sub.stale || depth > depDepth)) {
-          if (pending) break linking;
-          else {
+          if (pending) {
+            console.warn(
+              "[WARNING] A circular dependency was detected on re-evaluation."
+            );
+
+            break linking;
+          } else {
             sub.gen = gen;
             sub.step = step;
             sub.prevDeps = prevDeps;
             sub.running = false;
 
-            enqueue(depDepth, sub);
+            if (!dep.recursive) enqueue(depDepth, sub);
             if (!flushing()) flush();
             return;
           }
@@ -153,7 +164,7 @@ function run(sub: ComputedNode) {
 
     value = step.value;
   } catch (error) {
-    console.error("[ERROR] as sub: ", sub);
+    console.error("[ERROR] at sub: ", sub);
     console.error(error);
   }
 
@@ -163,7 +174,7 @@ function run(sub: ComputedNode) {
 
   if (sub.value === value) return;
   sub.value = value;
-  if ((subs = sub.subs)?.size) enqueue(depth, ...subs);
+  if (!sub.recursive && (subs = sub.subs)?.size) enqueue(depth, ...subs);
 }
 
 function unlink(sub: ComputedNode, deps: Set<ReactiveNode>) {
@@ -180,24 +191,20 @@ function unlink(sub: ComputedNode, deps: Set<ReactiveNode>) {
   }
 }
 
-const { enqueue, flush, flushing } = createMinHeap({ run, propagate });
-
 function propagate(dep: ComputedNode) {
   if (!dep.subs?.size) return;
 
   const subs = dep.subs,
     depDepth = dep.depth,
     minDepth = depDepth + 1;
-  let sub: ComputedNode, depth: number;
+  let sub: ComputedNode;
 
-  for (sub of subs) {
-    if ((depth = sub.depth) > depDepth) continue;
-
-    if (sub.slot === undefined) {
-      sub.depth = depth = minDepth;
+  for (sub of subs)
+    if (sub.recursive || sub.depth > depDepth) continue;
+    else if (sub.slot === undefined) {
+      sub.depth = minDepth;
       propagate(sub);
     } else enqueue(depDepth, sub);
-  }
 }
 
 const GeneratorFunction = function* () {}.constructor,

@@ -88,21 +88,23 @@ import { signal, effect } from "../dist/v4/index.mjs";
 
   const n = signal(-1);
 
+  const w = signal(function* () {
+    // return (yield z) * 2;
+    return ((yield n) < 0 ? yield n : yield z) * 2;
+  });
   const x = signal(function* () {
-    console.log("inside x");
-    return (yield z) * 2;
-    // return ((yield n) < 0 ? yield n : yield z) * 2;
+    return (yield w) * 3;
   });
   const y = signal(function* () {
-    console.log("inside y");
-    return (yield x) * 3;
+    return (yield x) * 4;
   });
   const z = signal(function* () {
-    return (yield y) * 4;
+    return (yield y) * 5;
   });
 
   effect(function* () {
     console.log("=".repeat(20));
+    console.log(`# w = ${yield w}`);
     console.log(`# x = ${yield x}`);
     console.log(`# y = ${yield y}`);
     console.log(`# z = ${yield z}`);
@@ -110,48 +112,49 @@ import { signal, effect } from "../dist/v4/index.mjs";
 
   console.log("*".repeat(30));
   n.set(1);
+  console.log("*".repeat(30));
   n.set(2);
 })();
 
 (() => {
   console.log("<<<TEST 4>>>");
 
-  // id: 41, depth: -1
+  // id: 42, depth: -1
   const s = signal(0);
-  // id: 42, depth: 0
+  // id: 43, depth: 0
   const a1 = signal(function* () {
     return (yield s) + 1;
   });
-  // id: 43, depth: 1
+  // id: 44, depth: 1
   const a2 = signal(function* () {
     console.log("inside a2", a1.get());
     return (yield a1) < 5 ? yield b1 : (yield b2) + (yield b3);
   });
-  // id: 44, depth: 0
+  // id: 45, depth: 0
   const b1 = signal(function* () {
     return (yield s) + 2;
   });
-  // id: 45, depth: 1
+  // id: 46, depth: 1
   const b2 = signal(function* () {
     console.log("inside b2", b1.get());
     return (yield b1) + 2;
   });
-  // id: 46, depth: 2
+  // id: 47, depth: 2
   const b3 = signal(function* () {
     console.log("inside b3", b2.get());
     return (yield b2) + 2;
   });
-  // id: 47, depth: 2
+  // id: 48, depth: 2
   const c1 = signal(function* () {
     yield s;
     return (yield a2) + 3;
   });
-  // id:48, depth: 3
+  // id:49, depth: 3
   const c2 = signal(function* () {
     return (yield c1) + 3;
   });
 
-  // id: 49, depth: 4
+  // id: 50, depth: 4
   effect(function* () {
     console.log("=".repeat(20));
     console.log(`# b2 = ${yield b2}`);
