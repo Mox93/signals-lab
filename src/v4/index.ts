@@ -3,20 +3,36 @@ import { createMinHeap } from "./heap";
 interface ReactiveNode {
   id: number;
   depth: number;
-  stale?: boolean;
-  deps?: Set<ReactiveNode>;
-  subs?: Set<ComputedNode>;
+  stale: boolean | undefined;
+  subId: number | undefined;
+  subRunId: number | undefined;
+  depsHead: LinkNode | undefined;
+  depsTail: LinkNode | undefined;
+  subsHead: LinkNode | undefined;
+  subsTail: LinkNode | undefined;
+}
+
+interface LinkNode {
+  sub: ComputedNode;
+  dep: ReactiveNode;
+  nextDep: LinkNode | undefined;
+  prevSub: LinkNode | undefined;
+  nextSub: LinkNode | undefined;
 }
 
 interface ComputedNode extends ReactiveNode {
-  value?: unknown;
+  value: unknown | undefined;
   fn(): Generator;
+  runId: number;
   slot?: number;
   running?: boolean;
   recursive?: boolean;
   gen?: Generator;
   step?: IteratorResult<unknown>;
-  prevDeps?: Set<ReactiveNode>;
+}
+
+interface SourceNode extends ReactiveNode {
+  value: unknown;
 }
 
 interface InternalSignal {
@@ -36,26 +52,41 @@ export function signal<T>(fn: () => Generator<unknown, T>): DerivedSignal<T>;
 export function signal<T>(value: T): Signal<T>;
 export function signal<T>(): Signal<T | undefined>;
 export function signal(value?: unknown) {
-  return value instanceof GeneratorFunction
-    ? Object.setPrototypeOf(
-        {
-          [SIGNAL]: {
-            id: id++,
-            fn: value as () => Generator,
-            depth: 0,
-            stale: true,
-          },
-        },
-        DERIVED_PROTO
-      )
-    : Object.setPrototypeOf(
-        { [SIGNAL]: { id: id++, value, depth: -1 } },
-        SOURCE_PROTO
-      );
+  if (value instanceof GeneratorFunction) {
+    const node: ComputedNode = {
+      id: id++,
+      fn: value as () => Generator,
+      stale: true,
+      depth: 0,
+      runId: 0,
+      value: undefined,
+      subId: undefined,
+      subRunId: undefined,
+      depsHead: undefined,
+      depsTail: undefined,
+      subsHead: undefined,
+      subsTail: undefined,
+    };
+    return Object.setPrototypeOf({ [SIGNAL]: node }, DERIVED_PROTO);
+  }
+
+  const node: SourceNode = {
+    id: id++,
+    value,
+    depth: -1,
+    stale: undefined,
+    subId: undefined,
+    subRunId: undefined,
+    depsHead: undefined,
+    depsTail: undefined,
+    subsHead: undefined,
+    subsTail: undefined,
+  };
+  return Object.setPrototypeOf({ [SIGNAL]: node }, SOURCE_PROTO);
 }
 
 export function isSignal<T = Signal<unknown>>(value: any): value is T {
-  return !!value?.[SIGNAL];
+  return !!(value && value[SIGNAL]);
 }
 
 export function batch(fn: () => void) {
@@ -63,14 +94,20 @@ export function batch(fn: () => void) {
 }
 
 export function effect(fn: () => Generator) {
-  const sub: ComputedNode = {
+  run({
     id: id++,
     fn,
-    depth: 0,
     stale: true,
-  };
-
-  run(sub);
+    depth: 0,
+    runId: 0,
+    value: undefined,
+    subId: undefined,
+    subRunId: undefined,
+    depsHead: undefined,
+    depsTail: undefined,
+    subsHead: undefined,
+    subsTail: undefined,
+  });
 }
 
 const { enqueue, flush, flushing } = createMinHeap({ run, propagate });
@@ -80,36 +117,40 @@ function run(sub: ComputedNode) {
     console.error(
       "[ERROR] A circular dependency was detected on initialization."
     );
-    sub.gen = sub.step = sub.prevDeps = undefined;
+    sub.gen = sub.step = undefined;
     sub.running = false;
     sub.recursive = true;
     return;
   }
   sub.running = true;
 
+  const subId = sub.id;
   let gen = sub.gen,
     step: IteratorResult<unknown> | undefined,
     target: unknown,
-    dep: ComputedNode,
-    prevDeps: Set<ReactiveNode> | undefined,
-    deps: Set<ReactiveNode> | undefined,
-    subs: Set<ComputedNode> | undefined,
     depth = sub.depth,
     maxDepth = depth - 1,
+    runId: number,
+    revisit = false,
+    dep: ComputedNode,
     depDepth: number,
-    pending = false,
+    link: LinkNode | undefined,
+    linkDep: ReactiveNode,
+    nextDep: LinkNode | undefined,
+    prevSub: LinkNode | undefined,
+    prevDep: LinkNode | undefined,
+    isNextDep: boolean,
     value: unknown;
 
   if (gen) {
     step = sub.step;
-    prevDeps = sub.prevDeps;
-    sub.gen = sub.step = sub.prevDeps = undefined;
-    deps = sub.deps!;
-    pending = true;
+    prevDep = sub.depsTail;
+    sub.gen = sub.step = undefined;
+    runId = sub.runId;
+    revisit = true;
   } else {
     gen = sub.fn();
-    prevDeps = sub.deps;
-    deps = sub.deps = new Set<ReactiveNode>();
+    runId = ++sub.runId;
   }
 
   try {
@@ -125,26 +166,50 @@ function run(sub: ComputedNode) {
 
       dep = target[SIGNAL];
 
-      linking: if (!deps.has(dep)) {
+      evaluation: {
+        // The dep has been visited withing this run, so we can skip.
+        if (dep.subId === subId && dep.subRunId === runId) break evaluation;
+
+        if (
+          !(isNextDep =
+            (nextDep =
+              prevDep !== undefined ? prevDep.nextDep : sub.depsHead) !==
+              undefined && nextDep.dep === dep) &&
+          prevDep !== undefined
+        ) {
+          link = sub.depsHead;
+
+          while (link !== undefined) {
+            (linkDep = link.dep).subId = subId;
+            linkDep.subRunId = runId;
+            if (linkDep === dep) break evaluation;
+            if (link === prevDep) break;
+            link = link.nextDep;
+          }
+        }
+
         depDepth = dep.depth;
 
         if (dep.stale) {
           run(dep);
           depDepth = dep.depth;
         } else if (!(sub.stale || depth > depDepth)) {
-          if (pending) {
+          if (revisit) {
             console.warn(
               "[WARNING] A circular dependency was detected on re-evaluation."
             );
-
-            break linking;
+            break evaluation;
           } else {
             sub.gen = gen;
             sub.step = step;
-            sub.prevDeps = prevDeps;
+            sub.depsTail = prevDep;
             sub.running = false;
 
-            if (!dep.recursive) enqueue(depDepth, sub);
+            if (!dep.recursive) {
+              LINK.sub = sub;
+              enqueue(LINK, depDepth);
+              LINK.sub = undefined as never;
+            }
             if (!flushing()) flush();
             return;
           }
@@ -152,13 +217,33 @@ function run(sub: ComputedNode) {
 
         if (depDepth > maxDepth) maxDepth = depDepth;
 
-        deps.add(dep);
-        if (!prevDeps?.delete(dep))
-          if ((subs = dep.subs)) subs.add(sub);
-          else dep.subs = new Set([sub]);
+        dep.subId = subId;
+        dep.subRunId = runId;
+
+        // The dep has been visited within the past run, so we can relink and skip.
+        if (isNextDep) {
+          prevDep = nextDep;
+          break evaluation;
+        }
+
+        link = dep.subsTail = {
+          sub,
+          dep,
+          nextDep,
+          prevSub: (prevSub = dep.subsTail),
+          nextSub: undefined,
+        };
+
+        if (prevSub !== undefined) prevSub.nextSub = link;
+        else dep.subsHead = link;
+
+        if (prevDep !== undefined) prevDep.nextDep = link;
+        else sub.depsHead = link;
+
+        prevDep = link;
       }
 
-      pending = false;
+      revisit = false;
       step = gen.next(dep.value);
     }
 
@@ -168,47 +253,83 @@ function run(sub: ComputedNode) {
     console.error(error);
   }
 
+  sub.depsTail = prevDep;
   sub.stale = sub.running = false;
   if (++maxDepth > depth) sub.depth = depth = maxDepth;
-  if (prevDeps?.size) unlink(sub, prevDeps);
+  unlink(sub);
 
   if (sub.value === value) return;
   sub.value = value;
-  if (!sub.recursive && (subs = sub.subs)?.size) enqueue(depth, ...subs);
+  if (!sub.recursive && (link = sub.subsHead)) enqueue(link, depth);
 }
 
-function unlink(sub: ComputedNode, deps: Set<ReactiveNode>) {
-  let dep: ReactiveNode,
-    subs: Set<ComputedNode> | undefined,
-    depDeps: Set<ReactiveNode> | undefined;
-  for (dep of deps) {
-    (subs = dep.subs)?.delete(sub);
-    if (!subs?.size && (depDeps = dep.deps)?.size) {
-      dep.deps = undefined;
-      dep.stale = true;
-      unlink(dep as ComputedNode, depDeps);
-    }
+function unlink(sub: ComputedNode) {
+  let depsTail = sub.depsTail,
+    nextDep: LinkNode | undefined,
+    link: LinkNode | undefined;
+
+  if (!depsTail) {
+    link = sub.depsHead;
+    sub.depsHead = undefined;
+  } else if ((nextDep = depsTail.nextDep)) {
+    link = nextDep;
+    depsTail.nextDep = undefined;
   }
+
+  if (!link) return;
+
+  let dep: ReactiveNode,
+    nextSub: LinkNode | undefined,
+    prevSub: LinkNode | undefined;
+
+  do {
+    dep = link.dep;
+    nextSub = link.nextSub;
+    prevSub = link.prevSub;
+    nextDep = link.nextDep;
+
+    if (nextSub) nextSub.prevSub = prevSub;
+    else dep.subsTail = prevSub;
+
+    if (prevSub) prevSub.nextSub = nextSub;
+    else dep.subsHead = nextSub;
+
+    if (!dep.subsHead && dep.depsHead) {
+      dep.stale = true;
+      dep.depth = -1;
+      link = dep.depsHead;
+      dep.depsTail!.nextDep = nextDep;
+      dep.depsHead = undefined;
+      dep.depsTail = undefined;
+      continue;
+    }
+  } while ((link = nextDep));
 }
 
 function propagate(dep: ComputedNode) {
-  if (!dep.subs?.size) return;
+  let link = dep.subsHead;
+  if (!link) return;
 
-  const subs = dep.subs,
-    depDepth = dep.depth,
+  const depDepth = dep.depth,
     minDepth = depDepth + 1;
-  let sub: ComputedNode;
+  let sub = link.sub;
 
-  for (sub of subs)
+  do {
     if (sub.recursive || sub.depth > depDepth) continue;
     else if (sub.slot === undefined) {
       sub.depth = minDepth;
       propagate(sub);
-    } else enqueue(depDepth, sub);
+    } else {
+      LINK.sub = sub;
+      enqueue(LINK, depDepth);
+      LINK.sub = undefined as never;
+    }
+  } while ((link = link.nextSub) && (sub = link.sub));
 }
 
 const GeneratorFunction = function* () {}.constructor,
   SIGNAL = Symbol("signal"),
+  LINK = {} as LinkNode,
   SOURCE_PROTO = {
     get(this: InternalSignal) {
       return this[SIGNAL].value;
@@ -219,9 +340,9 @@ const GeneratorFunction = function* () {}.constructor,
       value = typeof value === "function" ? value(oldValue) : value;
       if (value === oldValue) return;
       dep.value = value;
-      const subs = dep.subs;
+      const subs = dep.subsHead;
       if (!subs) return;
-      enqueue(-1, ...subs);
+      enqueue(subs, -1);
       if (!batchDepth) flush();
     },
   },

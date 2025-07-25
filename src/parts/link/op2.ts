@@ -170,4 +170,5 @@ export const nodes: ReactiveNode[] = Array.from({ length: 100 }, () => ({
 }));
 
 export const name = "alien signals";
-export const key = "deps";
+export const depsKey = "deps";
+export const subsKey = "subs";

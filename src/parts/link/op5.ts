@@ -1,25 +1,21 @@
-interface DepMap {
-  [id: number]: LinkNode | undefined;
-}
-
 export interface ReactiveNode {
-  subsHead?: LinkNode;
-  subsTail?: LinkNode;
-  depsHead?: LinkNode;
-  depsTail?: LinkNode;
   id: number;
-  run?: DepMap;
   runId: number;
   flags: Flags;
+  subId: number | undefined;
+  subRunId: number | undefined;
+  subsHead: LinkNode | undefined;
+  subsTail: LinkNode | undefined;
+  depsHead: LinkNode | undefined;
+  depsTail: LinkNode | undefined;
 }
 
 export interface LinkNode {
-  runId: number;
   sub: ReactiveNode;
   dep: ReactiveNode;
-  prevSub?: LinkNode;
-  nextSub?: LinkNode;
-  nextDep?: LinkNode;
+  prevSub: LinkNode | undefined;
+  nextSub: LinkNode | undefined;
+  nextDep: LinkNode | undefined;
 }
 
 export type Flags = number & { brand: "flags" };
@@ -32,8 +28,6 @@ export const COMPUTED = 1 as Flags,
 
 const DIRTY = STALE | PENDING;
 
-let id = 0;
-
 export const debug = {
   lastRunLinkInOrder: 0,
   lastRunLinkOutOfOrder: 0,
@@ -42,37 +36,53 @@ export const debug = {
 };
 
 export function link(dep: ReactiveNode, sub: ReactiveNode) {
-  const depId = dep.id,
-    run = sub.run,
+  const prevDep = sub.depsTail;
+  if (prevDep !== undefined && prevDep.dep === dep) return;
+
+  const subId = sub.id,
     runId = sub.runId;
+  if (subId === dep.subId && runId === dep.subRunId) return;
+  dep.subId = subId;
+  dep.subRunId = runId;
 
-  let newLink = run?.[depId];
-
-  if (newLink) {
-    if (newLink.runId === runId) return;
-    newLink.runId = runId;
-  } else {
-    const prevSub = dep.subsTail;
-    newLink = dep.subsTail = { runId, dep, sub, prevSub };
-
-    if (prevSub) prevSub.nextSub = newLink;
-    else dep.subsHead = newLink;
-
-    if (run) run[depId] = newLink;
+  const nextDep = prevDep !== undefined ? prevDep.nextDep : sub.depsHead;
+  if (nextDep !== undefined && nextDep.dep === dep) {
+    sub.depsTail = nextDep;
+    return;
   }
 
-  const prevDep = sub.depsTail;
+  if (prevDep !== undefined) {
+    let link = sub.depsHead;
+    while (link !== undefined) {
+      if (link.dep === dep) return;
+      if (link === prevDep) break;
+      link = link.nextDep!;
+    }
+  }
+
+  const prevSub = dep.subsTail;
+  const newLink =
+    (sub.depsTail =
+    dep.subsTail =
+      {
+        dep,
+        sub,
+        nextDep,
+        prevSub,
+        nextSub: undefined,
+      });
+
+  if (prevSub) prevSub.nextSub = newLink;
+  else dep.subsHead = newLink;
 
   if (prevDep) prevDep.nextDep = newLink;
   else sub.depsHead = newLink;
-
-  sub.depsTail = newLink;
 }
 
 export function startTracking(sub: ReactiveNode) {
   sub.depsTail = undefined;
   sub.flags = ((sub.flags & ~DIRTY) | RUNNING) as Flags;
-  sub.runId = ++sub.runId & 1;
+  sub.runId++;
 }
 
 export function endTracking(sub: ReactiveNode) {
@@ -80,7 +90,7 @@ export function endTracking(sub: ReactiveNode) {
     nextDep: LinkNode | undefined,
     link: LinkNode | undefined;
 
-  if (!depsTail) {
+  if (depsTail === undefined) {
     link = sub.depsHead;
     sub.depsHead = undefined;
   } else if ((nextDep = depsTail.nextDep)) {
@@ -89,28 +99,25 @@ export function endTracking(sub: ReactiveNode) {
   }
 
   sub.flags = (sub.flags & ~RUNNING) as Flags;
-  if (!link) return;
+  if (link === undefined) return;
 
   let dep: ReactiveNode,
     nextSub: LinkNode | undefined,
-    prevSub: LinkNode | undefined,
-    depMap;
+    prevSub: LinkNode | undefined;
 
-  while (link) {
+  while (link !== undefined) {
     dep = link.dep;
     nextSub = link.nextSub;
     prevSub = link.prevSub;
     nextDep = link.nextDep;
 
-    if (nextSub) nextSub.prevSub = prevSub;
+    if (nextSub !== undefined) nextSub.prevSub = prevSub;
     else dep.subsTail = prevSub;
 
-    if (prevSub) prevSub.nextSub = nextSub;
+    if (prevSub !== undefined) prevSub.nextSub = nextSub;
     else dep.subsHead = nextSub;
 
-    if ((depMap = link.sub.run)) depMap[dep.id] = undefined;
-
-    if (!dep.subsHead && dep.depsHead) {
+    if (dep.subsHead === undefined && dep.depsHead) {
       dep.flags = (dep.flags | STALE) as Flags;
       link = dep.depsHead;
       dep.depsTail!.nextDep = nextDep;
@@ -122,12 +129,20 @@ export function endTracking(sub: ReactiveNode) {
   }
 }
 
+let id = 0;
+
 export const nodes: ReactiveNode[] = Array.from({ length: 100 }, () => ({
   id: id++,
   flags: COMPUTED,
-  run: {},
   runId: 0,
+  subId: undefined,
+  subRunId: undefined,
+  depsHead: undefined,
+  depsTail: undefined,
+  subsHead: undefined,
+  subsTail: undefined,
 }));
 
-export const name = "signals experiment";
-export const key = "depsHead";
+export const name = "signals exp 4";
+export const depsKey = "depsHead";
+export const subsKey = "subsHead";

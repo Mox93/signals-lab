@@ -1,21 +1,23 @@
-import { op1, op2, op3, op4 } from "../dist/parts/index.mjs";
+import { op1, op2, op3, op4, op5 } from "../../dist/parts/link/index.mjs";
 
-const TESTS = { op1, op2, op3, op4 },
+const TESTS = { op1, op2, op3, op4, op5 },
   key = process.argv[process.argv.length - 1],
   op = TESTS[key];
 
 if (op) runLinkBench(op);
 else {
   // runLinkBench(op1);
+  runLinkBench(op5);
   runLinkBench(op2);
-  runLinkBench(op3);
   runLinkBench(op4);
+  runLinkBench(op3);
 }
 
 function runLinkBench({
   debug,
   endTracking,
-  key,
+  depsKey,
+  subsKey,
   link,
   nodes,
   name,
@@ -140,22 +142,53 @@ function runLinkBench({
 
   console.log(">> UNSTABLE RUNS:", time.toFixed(2));
 
-  const depsCounts = [];
+  cleanUp();
 
-  for (let i = 0; i < subs.length; i++) {
-    depsCounts[i] = 0;
-    dep = subs[i][key];
-    while (dep) {
-      depsCounts[i]++;
-      dep = dep.nextDep;
+  function countNodes() {
+    const depsCount = [];
+    const subsCount = [];
+
+    const visited = new Set();
+
+    for (let i = 0; i < subs.length; i++) {
+      depsCount[i] = 0;
+      dep = subs[i][depsKey];
+      while (dep) {
+        depsCount[i]++;
+        dep = dep.nextDep;
+        if (visited.has(dep)) {
+          console.error("[ERROR] cycle detected in deps");
+          break;
+        }
+        visited.add(dep);
+      }
+      visited.clear();
     }
-  }
 
-  console.log(">> DEPS COUNT:", depsCounts);
-  console.log("=".repeat(50));
+    for (let i = 0; i < deps.length; i++) {
+      subsCount[i] = 0;
+      sub = deps[i][subsKey];
+      while (sub) {
+        subsCount[i]++;
+        sub = sub.nextSub;
+
+        if (visited.has(sub)) {
+          console.error("[ERROR] cycle detected in subs");
+          break;
+        }
+        visited.add(sub);
+      }
+      visited.clear();
+    }
+
+    console.log(">> DEPS COUNT:", depsCount);
+    console.log(">> SUBS COUNT:", subsCount);
+    console.log("*".repeat(30));
+  }
 
   function cleanUp() {
     // logDebug();
+    countNodes();
     time = 0;
     resetAll();
     globalThis.gc();

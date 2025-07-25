@@ -1,6 +1,12 @@
 import { signal, effect } from "../dist/v4/index.mjs";
 
-(() => {
+test1();
+test2();
+test3();
+test4();
+
+function test1() {
+  console.log("#".repeat(50));
   console.log("<<<TEST 1>>>");
 
   let i = 0;
@@ -31,7 +37,7 @@ import { signal, effect } from "../dist/v4/index.mjs";
   });
 
   for (let i = 0; i < 10; i++) {
-    console.log("*".repeat(30));
+    console.log("*".repeat(15), i, "*".repeat(15));
     a.set((val) => val + 0.25);
   }
 
@@ -46,9 +52,10 @@ import { signal, effect } from "../dist/v4/index.mjs";
   d = ${d.get()}
   `
   );
-})();
+}
 
-(() => {
+function test2() {
+  console.log("#".repeat(50));
   console.log("<<<TEST 2>>>");
 
   const sums = {};
@@ -81,9 +88,10 @@ import { signal, effect } from "../dist/v4/index.mjs";
   }
 
   console.log(sums, counts);
-})();
+}
 
-(() => {
+function test3() {
+  console.log("#".repeat(50));
   console.log("<<<TEST 3>>>");
 
   const n = signal(-1);
@@ -114,9 +122,10 @@ import { signal, effect } from "../dist/v4/index.mjs";
   n.set(1);
   console.log("*".repeat(30));
   n.set(2);
-})();
+}
 
-(() => {
+function test4() {
+  console.log("#".repeat(50));
   console.log("<<<TEST 4>>>");
 
   // id: 42, depth: -1
@@ -166,4 +175,4 @@ import { signal, effect } from "../dist/v4/index.mjs";
     console.log("*".repeat(15), i, "*".repeat(15));
     s.set((val) => val + 1);
   }
-})();
+}

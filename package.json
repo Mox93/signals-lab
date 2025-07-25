@@ -11,9 +11,11 @@
   "scripts": {
     "build": "tsup src/* --format cjs,esm --dts",
     "dev": "tsup src/* --format cjs,esm --dts --watch",
-    "bench": "pnpm build && node --jitless --expose-gc benchs/propagate.mjs",
-    "memory": "pnpm build && node --expose-gc benchs/memoryUsage.mjs",
-    "compare": "pnpm build && node --jitless --expose-gc benchs/compare.mjs"
+    "bench": "pnpm build && node --jitless --expose-gc benchmark/genPropagate.mjs",
+    "memory": "pnpm build && node --expose-gc benchmark/memoryUsage.mjs",
+    "compare:link": "pnpm build && node --jitless --expose-gc benchmark/compare/link.mjs",
+    "compare:run": "node --jitless --expose-gc benchmark/compare/run.mjs",
+    "demo": "rm -rf dist && pnpm build && clear && node tests/genDemo.mjs"
   },
   "keywords": [
     "signals",

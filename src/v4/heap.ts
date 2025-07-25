@@ -1,6 +1,6 @@
 interface Bucket<T> {
   depth: number;
-  nodes: (T | undefined)[];
+  subs: (T | undefined)[];
   size: number;
   index: number;
   slot?: number;
@@ -15,6 +15,11 @@ export interface HeapNode {
   id: number;
   depth: number;
   slot?: number;
+}
+
+export interface HeapLink<T> {
+  sub: T;
+  nextSub?: HeapLink<T>;
 }
 
 export interface MinHeapTestOptions<T> extends MinHeapOptions<T> {
@@ -58,41 +63,43 @@ export function createMinHeap<T extends HeapNode>(options: MinHeapOptions<T>) {
 
   return methods;
 
-  function enqueue(parentDepth: number, ...children: T[]) {
-    const minDepth = parentDepth + 1;
-    let child: T,
+  function enqueue(link: HeapLink<T>, parentDepth: number) {
+    const minDepth = parentDepth + 1,
+      subList = [];
+    let sub: T,
       slot: number | undefined,
       depth: number,
       bucket: Bucket<T> | undefined,
       head: Bucket<T> | undefined,
-      nodes: (T | undefined)[],
+      subs: (T | undefined)[],
       i: number,
       pushedDown = false;
 
-    for (child of children) {
-      slot = child.slot;
+    do {
+      slot = (sub = link.sub).slot;
+      subList.push(`id: ${sub.id}, depth: ${sub.depth}`);
 
-      if ((depth = child.depth) > parentDepth) {
+      if ((depth = sub.depth) > parentDepth) {
         if (slot !== undefined) continue;
       } else {
         if (slot !== undefined && (bucket = cache[depth])) {
-          nodes = bucket.nodes;
-          if (slot !== (i = --bucket.size)) nodes[slot] = nodes[i];
-          nodes[i] = undefined;
+          subs = bucket.subs;
+          if (slot !== (i = --bucket.size)) subs[slot] = subs[i];
+          subs[i] = undefined;
         }
 
-        child.depth = depth = minDepth;
+        sub.depth = depth = minDepth;
         pushedDown = true;
       }
 
       if ((bucket = cache[depth]))
-        bucket.nodes[(child.slot = bucket.size++)] = child;
+        bucket.subs[(sub.slot = bucket.size++)] = sub;
       else
         cache[depth] = bucket = {
           depth,
-          nodes: [child],
+          subs: [sub],
           size: 1,
-          index: (child.slot = 0),
+          index: (sub.slot = 0),
         };
 
       if (bucket.slot === undefined) {
@@ -106,15 +113,15 @@ export function createMinHeap<T extends HeapNode>(options: MinHeapOptions<T>) {
           heapUp(bucket);
         }
       }
-      if (pushedDown) propagate?.(child);
-    }
+      if (pushedDown && propagate) propagate(sub);
+    } while ((link = link.nextSub!));
   }
 
   function flush() {
     if (!heapSize) return;
     isFlushing = true;
 
-    let node: T, bucket: Bucket<T>, nodes: (T | undefined)[], i: number;
+    let sub: T, bucket: Bucket<T>, subs: (T | undefined)[], i: number;
 
     while (true) {
       // TODO if a bucket was enqueued with a lower depth than the one currently running, them we need to investigate it.
@@ -122,9 +129,10 @@ export function createMinHeap<T extends HeapNode>(options: MinHeapOptions<T>) {
       i = bucket.index;
 
       while (i < bucket.size) {
-        node = (nodes = bucket.nodes)[i]!;
-        nodes[(bucket.index = i++)] = node.slot = undefined;
-        run(node);
+        sub = (subs = bucket.subs)[i]!;
+        subs[i] = sub.slot = undefined;
+        bucket.index = ++i;
+        run(sub);
       }
 
       if (bucket.slot !== undefined) {
@@ -161,16 +169,28 @@ export function createMinHeap<T extends HeapNode>(options: MinHeapOptions<T>) {
   }
 
   function heapDown(bucket: Bucket<T>) {
-    let i: number, j: number, lhs: number, rhs: number, parent: Bucket<T>;
+    let i: number,
+      j: number,
+      lhs: number,
+      rhs: number,
+      lBucket: Bucket<T>,
+      rBucket: Bucket<T>,
+      parent: Bucket<T>;
     j = i = bucket.slot!;
 
     while (true) {
       rhs = (lhs = (i << 1) + 1) + 1;
       parent = bucket;
 
-      if (lhs < heapSize && heap[lhs]!.depth < parent.depth) j = lhs;
-      if (rhs < heapSize && heap[rhs]!.depth < parent.depth) j = rhs;
-      if ((parent = heap[j]!) === bucket) break;
+      if (lhs < heapSize && (lBucket = heap[lhs]!).depth < parent.depth) {
+        parent = lBucket;
+        j = lhs;
+      }
+      if (rhs < heapSize && (rBucket = heap[rhs]!).depth < parent.depth) {
+        parent = rBucket;
+        j = rhs;
+      }
+      if (parent === bucket) break;
 
       heap[(parent.slot = i)] = parent;
       heap[(bucket.slot = j)] = bucket;
@@ -182,7 +202,5 @@ export function createMinHeap<T extends HeapNode>(options: MinHeapOptions<T>) {
 export function stringifyBucket<T extends HeapNode>(bucket: Bucket<T>) {
   return `depth: ${bucket.depth}, size: ${bucket.size}, index: ${
     bucket.index
-  }, slot: ${bucket.slot}, nodes: ${bucket.nodes.map(
-    (node) => node?.id || "_"
-  )}`;
+  }, slot: ${bucket.slot}, subs: ${bucket.subs.map((sub) => sub?.id || "_")}`;
 }

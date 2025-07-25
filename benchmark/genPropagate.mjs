@@ -1,5 +1,5 @@
 import { bench, boxplot, run } from "mitata";
-import { effect, signal } from "../dist/v4/experiment.mjs";
+import { effect, signal } from "../dist/v4/index.mjs";
 
 const sums = {};
 const counts = {};
